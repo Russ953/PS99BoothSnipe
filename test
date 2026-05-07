@@ -101,12 +101,31 @@ end
 -- ══════════════════════════════════════════
 local function purchaseItem(ownerID, itemGUID, amount)
     local remote = ReplicatedStorage:WaitForChild("Network"):WaitForChild("Booths_RequestPurchase")
+    
+    -- Ensure the owner ID is treated as a number
+    local formattedOwnerID = tonumber(ownerID)
+    
     local args = {
-        ownerID,
-        { [itemGUID] = amount },
-        { Caller = { LineNumber = 527, ScriptClass = "ModuleScript", Variadic = false, Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527", ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds", FunctionName = "PromptPurchase2", ScriptType = "Instance", ParameterCount = 2, SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds" } }
+        formattedOwnerID,
+        {
+            [tostring(itemGUID)] = tonumber(amount)
+        }
     }
-    return remote:InvokeServer(table.unpack(args))
+    
+    print(string.format("[BoothSniper] Sending Remote | Owner: %s | GUID: %s | Amount: %d", tostring(formattedOwnerID), tostring(itemGUID), amount))
+    
+    -- Try invoking the server and capture the response
+    local success, response = pcall(function()
+        return remote:InvokeServer(table.unpack(args))
+    end)
+    
+    if success then
+        print("[BoothSniper] Remote Success! Server Response:", tostring(response))
+        return true
+    else
+        warn("[BoothSniper] Remote Error:", tostring(response))
+        return false
+    end
 end
 
 -- ══════════════════════════════════════════
