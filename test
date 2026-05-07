@@ -29,7 +29,6 @@ local function fetchItemAssetID(class, itemName)
     if cachedAssetIDs[cacheKey] then return cachedAssetIDs[cacheKey] end
 
     local url = string.format("https://ps99.biggamesapi.io/api/collection/%s", class)
-    
     local ok, result = pcall(function() return game:HttpGet(url) end)
 
     if ok and result then
@@ -38,7 +37,6 @@ local function fetchItemAssetID(class, itemName)
             for _, itemData in pairs(decoded.data) do
                 if itemData.configName and itemData.configName:lower() == itemName:lower() then
                     if itemData.configData and itemData.configData.Icon then
-                        -- Extract just the numbers
                         local id = tostring(itemData.configData.Icon):match("%d+")
                         if id then
                             cachedAssetIDs[cacheKey] = id
@@ -48,18 +46,15 @@ local function fetchItemAssetID(class, itemName)
                 end
             end
         end
-    else
-        warn("[BoothSniper] Failed to connect to BIG Games API for class:", class)
     end
     return nil
 end
 
 -- ══════════════════════════════════════════
--- UTILITY: Normalize Asset ID (Only Numbers)
+-- UTILITY: Normalize Asset ID
 -- ══════════════════════════════════════════
 local function getCleanID(assetText)
     if not assetText then return "" end
-    -- This guarantees it strips out "rbxassetid://" or "http://" and only leaves the ID
     return tostring(assetText):match("%d+") or ""
 end
 
@@ -86,8 +81,6 @@ end
 local function getGems()
     local ls = LocalPlayer:FindFirstChild("leaderstats")
     if not ls then return 0 end
-    
-    -- Loops through instead of matching exact emojis
     for _, stat in ipairs(ls:GetChildren()) do
         if stat.Name:match("Diamonds") or stat.Name:match("💎") then
             return tonumber(stat.Value) or 0
@@ -97,35 +90,35 @@ local function getGems()
 end
 
 -- ══════════════════════════════════════════
--- CORE: Fire purchase remote
+-- CORE: EXACT Remote Fire (From your logs)
 -- ══════════════════════════════════════════
 local function purchaseItem(ownerID, itemGUID, amount)
-    local remote = ReplicatedStorage:WaitForChild("Network"):WaitForChild("Booths_RequestPurchase")
-    
-    -- Ensure the owner ID is treated as a number
-    local formattedOwnerID = tonumber(ownerID)
-    
+    -- Build the arguments exactly as you pasted them
     local args = {
-        formattedOwnerID,
+        tonumber(ownerID),
         {
             [tostring(itemGUID)] = tonumber(amount)
+        },
+        {
+            Caller = {
+                LineNumber = 527,
+                ScriptClass = "ModuleScript",
+                Variadic = false,
+                Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157",
+                ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds",
+                FunctionName = "PromptPurchase2",
+                Handle = "function: 0xfa15618739cde075",
+                ScriptType = "Instance",
+                ParameterCount = 2,
+                SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds"
+            }
         }
     }
+
+    print(string.format("[BoothSniper] Firing Remote! Owner: %s | GUID: %s | Amount: %d", tostring(ownerID), tostring(itemGUID), tonumber(amount)))
     
-    print(string.format("[BoothSniper] Sending Remote | Owner: %s | GUID: %s | Amount: %d", tostring(formattedOwnerID), tostring(itemGUID), amount))
-    
-    -- Try invoking the server and capture the response
-    local success, response = pcall(function()
-        return remote:InvokeServer(table.unpack(args))
-    end)
-    
-    if success then
-        print("[BoothSniper] Remote Success! Server Response:", tostring(response))
-        return true
-    else
-        warn("[BoothSniper] Remote Error:", tostring(response))
-        return false
-    end
+    -- Execute exactly like your remote spy output
+    game:GetService("ReplicatedStorage"):WaitForChild("Network"):WaitForChild("Booths_RequestPurchase"):InvokeServer(unpack(args))
 end
 
 -- ══════════════════════════════════════════
@@ -148,13 +141,9 @@ end
 -- ══════════════════════════════════════════
 local function scanAllBooths(statusLabel)
     local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
-    if not boothsFolder then 
-        error("Could not find __THINGS.Booths in workspace!")
-        return 
-    end
+    if not boothsFolder then return end
 
     local myGems = getGems()
-    local foundCount = 0
     local uiUpdated = false
 
     for _, booth in ipairs(boothsFolder:GetChildren()) do
@@ -178,7 +167,6 @@ local function scanAllBooths(statusLabel)
 
                     for _, target in ipairs(_G.BoothSniperSettings.Items) do
                         if target.AssetID and cleanFoundID == getCleanID(target.AssetID) then
-                            foundCount += 1
                             
                             local costLabel = itemBox:FindFirstChild("Buy") and itemBox.Buy:FindFirstChild("Cost")
                                 
@@ -186,31 +174,26 @@ local function scanAllBooths(statusLabel)
                                 local pricePerItem = parsePrice(costLabel.Text)
                                 local maxPrice = target.MaxPrice or math.huge
                                 
-                                print(string.format("[BoothSniper] Match! ID: %s | Price: %d | MaxPrice: %d", cleanFoundID, pricePerItem, maxPrice))
-
-                                if pricePerItem > maxPrice then
-                                    if statusLabel then
-                                        statusLabel.Text = string.format("❌ Overpriced: %s/ea", costLabel.Text)
-                                        statusLabel.TextColor3 = Color3.fromRGB(230, 150, 80)
-                                        uiUpdated = true
-                                    end
-                                    continue
-                                end
-                                
-                                local stockAvailable = tonumber(itemBox:GetAttribute("Quantity")) or 1
-                                local maxAffordable = math.floor(myGems / pricePerItem)
-                                local buyAmount = math.min(maxAffordable, stockAvailable)
-                                
-                                if buyAmount > 0 then
-                                    if statusLabel then
-                                        statusLabel.Text = string.format("✔️ Buying %dx for %s/ea!", buyAmount, costLabel.Text)
-                                        statusLabel.TextColor3 = Color3.fromRGB(100, 255, 130)
-                                        uiUpdated = true
-                                    end
+                                if pricePerItem <= maxPrice then
+                                    local stockAvailable = tonumber(itemBox:GetAttribute("Quantity")) or 1
+                                    local maxAffordable = math.floor(myGems / pricePerItem)
+                                    local buyAmount = math.min(maxAffordable, stockAvailable)
                                     
-                                    local guid = itemBox.Name
-                                    task.spawn(function() purchaseItem(ownerID, guid, buyAmount) end)
-                                    task.wait(0.5) 
+                                    if buyAmount > 0 then
+                                        if statusLabel then
+                                            statusLabel.Text = string.format("✔️ Bought %dx for %s/ea!", buyAmount, costLabel.Text)
+                                            statusLabel.TextColor3 = Color3.fromRGB(100, 255, 130)
+                                            uiUpdated = true
+                                        end
+                                        
+                                        local guid = itemBox.Name
+                                        task.spawn(function() 
+                                            pcall(function() purchaseItem(ownerID, guid, buyAmount) end)
+                                        end)
+                                        
+                                        -- Wait to prevent spamming remotes
+                                        task.wait(0.5) 
+                                    end
                                 end
                             end
                         end
@@ -318,10 +301,7 @@ if _G.BoothSniperSettings.ShowGUI then
             
             task.spawn(function()
                 while isScanning do
-                    local success, err = pcall(function() scanAllBooths(Status) end)
-                    if not success then
-                        warn("[BoothSniper] CRASH ERROR:", err) -- THIS PRINTS THE ERROR NOW!
-                    end
+                    pcall(function() scanAllBooths(Status) end)
                     task.wait(_G.BoothSniperSettings.ScanDelay)
                 end
             end)
@@ -331,10 +311,7 @@ else
     isScanning = true
     task.spawn(function()
         while isScanning do
-            local success, err = pcall(function() scanAllBooths(nil) end)
-            if not success then
-                warn("[BoothSniper] CRASH ERROR:", err)
-            end
+            pcall(function() scanAllBooths(nil) end)
             task.wait(_G.BoothSniperSettings.ScanDelay)
         end
     end)
