@@ -22,59 +22,42 @@ local isScanning = false
 local cachedAssetIDs = {} -- Stores fetched Asset IDs so we don't spam the API
 
 -- ══════════════════════════════════════════
--- UTILITY: Fetch Item Data from API
+-- UTILITY: Fetch Item Data from OFFICIAL BIG GAMES API
 -- ══════════════════════════════════════════
 local function fetchItemAssetID(class, itemName)
-    -- Check if we already fetched it
+    -- Check if we already fetched it to avoid spamming the API
     local cacheKey = class .. "_" .. itemName
     if cachedAssetIDs[cacheKey] then return cachedAssetIDs[cacheKey] end
 
-    -- The PS99 API raw data structure
-    local url = string.format("https://raw.githubusercontent.com/joekiller/node-ps99-api/main/data/%s.json", class)
+    -- Connect directly to the official BIG Games PS99 Database
+    local url = string.format("https://ps99.biggamesapi.io/api/collection/%s", class)
     
     local ok, result = pcall(function()
         return game:HttpGet(url)
     end)
 
     if ok and result then
-        local data = HttpService:JSONDecode(result)
-        -- Search through the class file for the item name
-        for _, itemData in pairs(data) do
-            if itemData.name and itemData.name:lower() == itemName:lower() then
-                if itemData.config and itemData.config.Icon then
-                    local id = tostring(itemData.config.Icon):gsub("rbxassetid://", "")
-                    cachedAssetIDs[cacheKey] = id
-                    return id
+        local decoded = HttpService:JSONDecode(result)
+        
+        -- The API wraps the item list inside a "data" array
+        if decoded and decoded.data then
+            for _, itemData in pairs(decoded.data) do
+                -- Check if the item name matches what you configured
+                if itemData.configName and itemData.configName:lower() == itemName:lower() then
+                    if itemData.configData and itemData.configData.Icon then
+                        -- Extract just the numbers from the rbxassetid:// string
+                        local id = tostring(itemData.configData.Icon):gsub("rbxassetid://", "")
+                        cachedAssetIDs[cacheKey] = id
+                        return id
+                    end
                 end
             end
         end
     else
-        warn("[BoothSniper] Failed to fetch API for class:", class)
+        warn("[BoothSniper] Failed to connect to BIG Games API for class:", class)
     end
     
     return nil
-end
-
--- ══════════════════════════════════════════
--- UTILITY: Normalize Asset ID
--- ══════════════════════════════════════════
-local function getCleanID(assetText)
-    if not assetText then return "" end
-    return tostring(assetText):gsub("rbxassetid://", "")
-end
-
--- ══════════════════════════════════════════
--- UTILITY: Parse price text
--- ══════════════════════════════════════════
-local function parsePrice(text)
-    if not text then return 0 end
-    text = text:lower():gsub(",", ""):gsub(" ", "")
-    local suffixes = { t = 1e12, b = 1e9, m = 1e6, k = 1e3 }
-    for suffix, mult in pairs(suffixes) do
-        local num = text:match("^(%d+%.?%d*)" .. suffix .. "$")
-        if num then return tonumber(num) * mult end
-    end
-    return tonumber(text) or 0
 end
 
 -- ══════════════════════════════════════════
