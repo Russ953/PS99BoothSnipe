@@ -115,6 +115,23 @@ local function preLoadTargets()
 end
 
 -- ══════════════════════════════════════════
+-- UTILITY: Parse price text (1k, 1m, 1b, 1t)
+-- ══════════════════════════════════════════
+local function parsePrice(text)
+    if not text then return 0 end
+    text = text:lower():gsub(",", ""):gsub(" ", ""):gsub("💎", "")
+
+    local suffixes = { t = 1e12, b = 1e9, m = 1e6, k = 1e3 }
+    for suffix, mult in pairs(suffixes) do
+        local num = text:match("^(%d+%.?%d*)" .. suffix .. "$")
+        if num then return tonumber(num) * mult end
+    end
+
+    local rawNum = text:match("^(%d+%.?%d*)$")
+    return tonumber(rawNum) or 0
+end
+
+-- ══════════════════════════════════════════
 -- CORE: Scan all booths logic
 -- ══════════════════════════════════════════
 local function scanAllBooths(statusLabel)
@@ -123,6 +140,7 @@ local function scanAllBooths(statusLabel)
 
     local myGems = getGems()
     local foundCount = 0
+    local uiUpdated = false
 
     for _, booth in ipairs(boothsFolder:GetChildren()) do
         local ownerID = booth:GetAttribute("Owner")
@@ -151,12 +169,17 @@ local function scanAllBooths(statusLabel)
                                 
                             if costLabel and costLabel:IsA("TextLabel") then
                                 local pricePerItem = parsePrice(costLabel.Text)
+                                local maxPrice = target.MaxPrice or math.huge
                                 
-                                if pricePerItem > (target.MaxPrice or math.huge) then
+                                print(string.format("[BoothSniper] Found target %s! Booth Price: %d | Your Max Price: %d", target.AssetID, pricePerItem, maxPrice))
+
+                                if pricePerItem > maxPrice then
                                     if statusLabel then
                                         statusLabel.Text = string.format("❌ Skipped (Overpriced): %s", costLabel.Text)
                                         statusLabel.TextColor3 = Color3.fromRGB(230, 150, 80)
+                                        uiUpdated = true
                                     end
+                                    print("[BoothSniper] -> Skipped: Price too high.")
                                     continue
                                 end
                                 
@@ -168,13 +191,22 @@ local function scanAllBooths(statusLabel)
                                     if statusLabel then
                                         statusLabel.Text = string.format("✔️ Buying %dx for %s/ea!", buyAmount, costLabel.Text)
                                         statusLabel.TextColor3 = Color3.fromRGB(100, 255, 130)
+                                        uiUpdated = true
                                     end
                                     
+                                    print(string.format("[BoothSniper] -> Attempting to buy %d items...", buyAmount))
                                     local guid = itemBox.Name
                                     task.spawn(function()
                                         purchaseItem(ownerID, guid, buyAmount)
                                     end)
-                                    task.wait(0.2)
+                                    task.wait(0.5)
+                                else
+                                    if statusLabel then
+                                        statusLabel.Text = "❌ Found target, but not enough gems."
+                                        statusLabel.TextColor3 = Color3.fromRGB(230, 80, 80)
+                                        uiUpdated = true
+                                    end
+                                    print("[BoothSniper] -> Skipped: Not enough gems.")
                                 end
                             end
                         end
@@ -184,8 +216,8 @@ local function scanAllBooths(statusLabel)
         end
     end
 
-    if foundCount == 0 and isScanning and statusLabel then
-        statusLabel.Text = "🔍 Scanning..."
+    if isScanning and statusLabel and not uiUpdated then
+        statusLabel.Text = string.format("🔍 Scanning for %d targeted items...", #_G.BoothSniperSettings.Items)
         statusLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
     end
 end
