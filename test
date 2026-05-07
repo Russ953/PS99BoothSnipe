@@ -1,0 +1,304 @@
+-- ══════════════════════════════════════════════════════════════════════════
+-- BOOTH SNIPER CONFIGURATION
+-- Configure your settings below before running the script.
+-- ══════════════════════════════════════════════════════════════════════════
+_G.BoothSniperSettings = {
+    ShowGUI = false, -- Set to false to run silently in the background without a menu
+    ScanDelay = 0.5, -- How fast it scans all booths (in seconds)
+    
+    Items = {
+        -- Add items you want to auto-buy here. 
+        -- AssetID: The image ID of the item.
+        -- MaxPrice: The maximum gems you are willing to pay PER item. Set to math.huge for infinite.
+        
+        {AssetID = "rbxassetid://12345678", MaxPrice = 1000000},
+        {AssetID = "87654321", MaxPrice = 50000}, -- "rbxassetid://" is optional, the script handles both!
+    }
+}
+-- ══════════════════════════════════════════════════════════════════════════
+
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+local isScanning = false
+
+-- ══════════════════════════════════════════
+-- UTILITY: Normalize Asset ID
+-- ══════════════════════════════════════════
+local function getCleanID(assetText)
+    if not assetText then return "" end
+    return tostring(assetText):gsub("rbxassetid://", "")
+end
+
+-- ══════════════════════════════════════════
+-- UTILITY: Parse price text (1k, 1m, 1b, 1t)
+-- ══════════════════════════════════════════
+local function parsePrice(text)
+    if not text then return 0 end
+    text = text:lower():gsub(",", ""):gsub(" ", "")
+    local suffixes = { t = 1e12, b = 1e9, m = 1e6, k = 1e3 }
+    for suffix, mult in pairs(suffixes) do
+        local num = text:match("^(%d+%.?%d*)" .. suffix .. "$")
+        if num then return tonumber(num) * mult end
+    end
+    return tonumber(text) or 0
+end
+
+-- ══════════════════════════════════════════
+-- UTILITY: Get player gem count
+-- ══════════════════════════════════════════
+local function getGems()
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    if not ls then return 0 end
+    local diamonds = ls:FindFirstChild("\240\159\146\142 Diamonds") 
+    return diamonds and diamonds.Value or 0
+end
+
+-- ══════════════════════════════════════════
+-- CORE: Fire purchase remote
+-- ══════════════════════════════════════════
+local function purchaseItem(ownerID, itemGUID, amount)
+    local remote = ReplicatedStorage:WaitForChild("Network"):WaitForChild("Booths_RequestPurchase")
+    local args = {
+        ownerID,
+        { [itemGUID] = amount },
+        {
+            Caller = {
+                LineNumber = 527,
+                ScriptClass = "ModuleScript",
+                Variadic = false,
+                Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157",
+                ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds",
+                FunctionName = "PromptPurchase2",
+                Handle = "function: 0xfa15618739cde075",
+                ScriptType = "Instance",
+                ParameterCount = 2,
+                SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds"
+            }
+        }
+    }
+    return remote:InvokeServer(table.unpack(args))
+end
+
+-- ══════════════════════════════════════════
+-- CORE: Scan all booths logic
+-- ══════════════════════════════════════════
+local function scanAllBooths(statusLabel)
+    local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
+    if not boothsFolder then return end
+
+    local myGems = getGems()
+    local foundCount = 0
+
+    for _, booth in ipairs(boothsFolder:GetChildren()) do
+        local ownerID = booth:GetAttribute("Owner")
+        if not ownerID or ownerID == LocalPlayer.UserId then continue end -- Skip empty or own booths
+
+        local petScroll = booth:FindFirstChild("Pets")
+            and booth.Pets:FindFirstChild("BoothTop")
+            and booth.Pets.BoothTop:FindFirstChild("PetScroll")
+
+        if petScroll then
+            for _, itemBox in ipairs(petScroll:GetChildren()) do
+                if itemBox:IsA("UIListLayout") or itemBox:IsA("UIPadding") then continue end
+
+                local iconLabel = itemBox:FindFirstChild("Holder")
+                    and itemBox.Holder:FindFirstChild("ItemSlot")
+                    and itemBox.Holder.ItemSlot:FindFirstChild("Icon")
+
+                if iconLabel and iconLabel:IsA("ImageLabel") then
+                    local cleanFoundID = getCleanID(iconLabel.Image)
+
+                    -- Check against configured targets
+                    for _, target in ipairs(_G.BoothSniperSettings.Items) do
+                        if cleanFoundID == getCleanID(target.AssetID) then
+                            foundCount += 1
+                            
+                            local costLabel = itemBox:FindFirstChild("Buy")
+                                and itemBox.Buy:FindFirstChild("Cost")
+                                
+                            if costLabel and costLabel:IsA("TextLabel") then
+                                local pricePerItem = parsePrice(costLabel.Text)
+                                
+                                -- Check max price config
+                                if pricePerItem > (target.MaxPrice or math.huge) then
+                                    if statusLabel then
+                                        statusLabel.Text = string.format("❌ Skipped (Overpriced): %s/ea", costLabel.Text)
+                                        statusLabel.TextColor3 = Color3.fromRGB(230, 150, 80)
+                                    end
+                                    continue
+                                end
+                                
+                                -- Calculate affordable amount
+                                local stockAvailable = itemBox:GetAttribute("Quantity") or 1
+                                local maxAffordable = math.floor(myGems / pricePerItem)
+                                local buyAmount = math.min(maxAffordable, stockAvailable)
+                                
+                                if buyAmount > 0 then
+                                    if statusLabel then
+                                        statusLabel.Text = string.format("✔️ Buying %dx for %s gems/ea!", buyAmount, costLabel.Text)
+                                        statusLabel.TextColor3 = Color3.fromRGB(100, 255, 130)
+                                    end
+                                    
+                                    local guid = itemBox.Name
+                                    task.spawn(function()
+                                        purchaseItem(ownerID, guid, buyAmount)
+                                    end)
+                                    task.wait(0.2)
+                                else
+                                    if statusLabel then
+                                        statusLabel.Text = "❌ Found target, but not enough gems."
+                                        statusLabel.TextColor3 = Color3.fromRGB(230, 80, 80)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if foundCount == 0 and isScanning and statusLabel then
+        statusLabel.Text = string.format("🔍 Scanning for %d targeted items...", #_G.BoothSniperSettings.Items)
+        statusLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
+    end
+end
+
+-- ══════════════════════════════════════════
+-- EXECUTION & GUI BUILDER
+-- ══════════════════════════════════════════
+if _G.BoothSniperSettings.ShowGUI then
+    -- Build the control panel GUI
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "AutoScannerGui"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
+
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0, 300, 0, 150)
+    Frame.Position = UDim2.new(0.5, -150, 0.5, -75)
+    Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    Frame.BorderSizePixel = 0
+    Frame.Active = true
+    Frame.Draggable = true
+    Frame.Parent = ScreenGui
+
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 8)
+    UICorner.Parent = Frame
+
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 30)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = Frame
+
+    local TitleCorner = Instance.new("UICorner")
+    TitleCorner.CornerRadius = UDim.new(0, 8)
+    TitleCorner.Parent = TitleBar
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, -40, 1, 0)
+    TitleLabel.Position = UDim2.new(0, 10, 0, 0)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = "🎯 Auto-Booth Sniper"
+    TitleLabel.TextColor3 = Color3.fromRGB(220, 220, 255)
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextSize = 14
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = TitleBar
+
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+    CloseBtn.Position = UDim2.new(1, -30, 0, 0)
+    CloseBtn.BackgroundTransparency = 1
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.TextSize = 16
+    CloseBtn.Parent = TitleBar
+
+    local InfoLabel = Instance.new("TextLabel")
+    InfoLabel.Size = UDim2.new(1, -20, 0, 20)
+    InfoLabel.Position = UDim2.new(0, 10, 0, 40)
+    InfoLabel.BackgroundTransparency = 1
+    InfoLabel.Text = "Loaded " .. #_G.BoothSniperSettings.Items .. " target(s) from config."
+    InfoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    InfoLabel.Font = Enum.Font.Gotham
+    InfoLabel.TextSize = 12
+    InfoLabel.Parent = Frame
+
+    local Status = Instance.new("TextLabel")
+    Status.Size = UDim2.new(1, -20, 0, 20)
+    Status.Position = UDim2.new(0, 10, 0, 65)
+    Status.BackgroundTransparency = 1
+    Status.Text = "Idle. Ready to scan."
+    Status.TextColor3 = Color3.fromRGB(150, 150, 150)
+    Status.Font = Enum.Font.Gotham
+    Status.TextSize = 12
+    Status.Parent = Frame
+
+    local ToggleBtn = Instance.new("TextButton")
+    ToggleBtn.Size = UDim2.new(1, -20, 0, 35)
+    ToggleBtn.Position = UDim2.new(0, 10, 0, 100)
+    ToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 80)
+    ToggleBtn.Text = "▶ Start Scanner"
+    ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ToggleBtn.Font = Enum.Font.GothamBold
+    ToggleBtn.TextSize = 13
+    ToggleBtn.Parent = Frame
+
+    local ToggleCorner = Instance.new("UICorner")
+    ToggleCorner.CornerRadius = UDim.new(0, 6)
+    ToggleCorner.Parent = ToggleBtn
+
+    -- GUI Interaction
+    CloseBtn.MouseButton1Click:Connect(function()
+        isScanning = false
+        ScreenGui:Destroy()
+    end)
+
+    ToggleBtn.MouseButton1Click:Connect(function()
+        if isScanning then
+            isScanning = false
+            ToggleBtn.Text = "▶ Start Scanner"
+            ToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 80)
+            Status.Text = "Stopped."
+            Status.TextColor3 = Color3.fromRGB(150, 150, 150)
+        else
+            if #_G.BoothSniperSettings.Items == 0 then
+                Status.Text = "❌ No items configured in script!"
+                Status.TextColor3 = Color3.fromRGB(255, 100, 100)
+                return
+            end
+
+            isScanning = true
+            ToggleBtn.Text = "⏸ Stop Scanner"
+            ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+            
+            task.spawn(function()
+                while isScanning do
+                    pcall(function()
+                        scanAllBooths(Status)
+                    end)
+                    task.wait(_G.BoothSniperSettings.ScanDelay)
+                end
+            end)
+        end
+    end)
+else
+    -- HEADLESS MODE (No GUI)
+    isScanning = true
+    print("[BoothSniper] Running in headless mode. Loaded " .. #_G.BoothSniperSettings.Items .. " targets.")
+    task.spawn(function()
+        while isScanning do
+            pcall(function()
+                scanAllBooths(nil) -- Passes nil so it doesn't try to update a non-existent GUI status
+            end)
+            task.wait(_G.BoothSniperSettings.ScanDelay)
+        end
+    end)
+end
