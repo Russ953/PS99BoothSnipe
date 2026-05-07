@@ -1,22 +1,18 @@
--- ══════════════════════════════════════════════════════════════════════════
--- BOOTH SNIPER CONFIGURATION
--- Configure your settings below before running the script.
--- ══════════════════════════════════════════════════════════════════════════
-_G.BoothSniperSettings = {
-    ShowGUI = false, -- Set to false to run silently in the background without a menu
-    ScanDelay = 0.5, -- How fast it scans all booths (in seconds)
-    
-    Items = {
-        -- Add items you want to auto-buy here. 
-        -- AssetID: The image ID of the item.
-        -- MaxPrice: The maximum gems you are willing to pay PER item. Set to math.huge for infinite.
-        
-        {AssetID = "rbxassetid://12345678", MaxPrice = 1000000},
-        {AssetID = "87654321", MaxPrice = 50000}, -- "rbxassetid://" is optional, the script handles both!
+-- ══════════════════════════════════════════
+-- FAILSAFE: Ensure Settings Exist
+-- ══════════════════════════════════════════
+if not _G.BoothSniperSettings then
+    _G.BoothSniperSettings = {
+        ShowGUI = true,
+        ScanDelay = 0.5,
+        Items = {}
     }
-}
--- ══════════════════════════════════════════════════════════════════════════
+end
 
+-- Force GUI to show if it somehow got set to nil
+if _G.BoothSniperSettings.ShowGUI == nil then
+    _G.BoothSniperSettings.ShowGUI = true
+end
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
