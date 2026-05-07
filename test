@@ -19,36 +19,31 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
 local isScanning = false
-local cachedAssetIDs = {} -- Stores fetched Asset IDs so we don't spam the API
+local cachedAssetIDs = {}
 
 -- ══════════════════════════════════════════
--- UTILITY: Fetch Item Data from OFFICIAL BIG GAMES API
+-- UTILITY: Fetch Item Data from OFFICIAL API
 -- ══════════════════════════════════════════
 local function fetchItemAssetID(class, itemName)
-    -- Check if we already fetched it to avoid spamming the API
     local cacheKey = class .. "_" .. itemName
     if cachedAssetIDs[cacheKey] then return cachedAssetIDs[cacheKey] end
 
-    -- Connect directly to the official BIG Games PS99 Database
     local url = string.format("https://ps99.biggamesapi.io/api/collection/%s", class)
     
-    local ok, result = pcall(function()
-        return game:HttpGet(url)
-    end)
+    local ok, result = pcall(function() return game:HttpGet(url) end)
 
     if ok and result then
         local decoded = HttpService:JSONDecode(result)
-        
-        -- The API wraps the item list inside a "data" array
         if decoded and decoded.data then
             for _, itemData in pairs(decoded.data) do
-                -- Check if the item name matches what you configured
                 if itemData.configName and itemData.configName:lower() == itemName:lower() then
                     if itemData.configData and itemData.configData.Icon then
-                        -- Extract just the numbers from the rbxassetid:// string
-                        local id = tostring(itemData.configData.Icon):gsub("rbxassetid://", "")
-                        cachedAssetIDs[cacheKey] = id
-                        return id
+                        -- Extract just the numbers
+                        local id = tostring(itemData.configData.Icon):match("%d+")
+                        if id then
+                            cachedAssetIDs[cacheKey] = id
+                            return id
+                        end
                     end
                 end
             end
@@ -56,18 +51,49 @@ local function fetchItemAssetID(class, itemName)
     else
         warn("[BoothSniper] Failed to connect to BIG Games API for class:", class)
     end
-    
     return nil
 end
 
 -- ══════════════════════════════════════════
--- UTILITY: Get player gem count
+-- UTILITY: Normalize Asset ID (Only Numbers)
+-- ══════════════════════════════════════════
+local function getCleanID(assetText)
+    if not assetText then return "" end
+    -- This guarantees it strips out "rbxassetid://" or "http://" and only leaves the ID
+    return tostring(assetText):match("%d+") or ""
+end
+
+-- ══════════════════════════════════════════
+-- UTILITY: Ultra-Safe Price Parser
+-- ══════════════════════════════════════════
+local function parsePrice(text)
+    if type(text) ~= "string" then return 0 end
+    text = text:lower():gsub(",", ""):gsub(" ", "")
+    
+    local suffixes = { t = 1e12, b = 1e9, m = 1e6, k = 1e3 }
+    for suffix, mult in pairs(suffixes) do
+        local num = text:match("([%d%.]+)" .. suffix)
+        if num then return tonumber(num) * mult end
+    end
+    
+    local rawNum = text:match("([%d%.]+)")
+    return tonumber(rawNum) or 0
+end
+
+-- ══════════════════════════════════════════
+-- UTILITY: Bulletproof Gem Finder
 -- ══════════════════════════════════════════
 local function getGems()
     local ls = LocalPlayer:FindFirstChild("leaderstats")
     if not ls then return 0 end
-    local diamonds = ls:FindFirstChild("\240\159\146\142 Diamonds") 
-    return diamonds and diamonds.Value or 0
+    
+    -- Loops through instead of matching exact emojis
+    for _, stat in ipairs(ls:GetChildren()) do
+        if stat.Name:match("Diamonds") or stat.Name:match("💎") then
+            return tonumber(stat.Value) or 0
+        end
+    end
+    return 0
 end
 
 -- ══════════════════════════════════════════
@@ -78,20 +104,7 @@ local function purchaseItem(ownerID, itemGUID, amount)
     local args = {
         ownerID,
         { [itemGUID] = amount },
-        {
-            Caller = {
-                LineNumber = 527,
-                ScriptClass = "ModuleScript",
-                Variadic = false,
-                Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157",
-                ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds",
-                FunctionName = "PromptPurchase2",
-                Handle = "function: 0xfa15618739cde075",
-                ScriptType = "Instance",
-                ParameterCount = 2,
-                SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds"
-            }
-        }
+        { Caller = { LineNumber = 527, ScriptClass = "ModuleScript", Variadic = false, Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527", ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds", FunctionName = "PromptPurchase2", ScriptType = "Instance", ParameterCount = 2, SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds" } }
     }
     return remote:InvokeServer(table.unpack(args))
 end
@@ -101,34 +114,14 @@ end
 -- ══════════════════════════════════════════
 local function preLoadTargets()
     for _, target in ipairs(_G.BoothSniperSettings.Items) do
-        -- If they used the new Class/Item method instead of AssetID
         if target.Class and target.ItemName and not target.AssetID then
             local fetchedID = fetchItemAssetID(target.Class, target.ItemName)
             if fetchedID then
                 target.AssetID = fetchedID
-                print("[BoothSniper] Resolved API ID for", target.ItemName, "->", fetchedID)
-            else
-                warn("[BoothSniper] Could not find Asset ID for:", target.ItemName)
+                print("[BoothSniper] API loaded:", target.ItemName, "->", fetchedID)
             end
         end
     end
-end
-
--- ══════════════════════════════════════════
--- UTILITY: Parse price text (1k, 1m, 1b, 1t)
--- ══════════════════════════════════════════
-local function parsePrice(text)
-    if not text then return 0 end
-    text = text:lower():gsub(",", ""):gsub(" ", ""):gsub("💎", "")
-
-    local suffixes = { t = 1e12, b = 1e9, m = 1e6, k = 1e3 }
-    for suffix, mult in pairs(suffixes) do
-        local num = text:match("^(%d+%.?%d*)" .. suffix .. "$")
-        if num then return tonumber(num) * mult end
-    end
-
-    local rawNum = text:match("^(%d+%.?%d*)$")
-    return tonumber(rawNum) or 0
 end
 
 -- ══════════════════════════════════════════
@@ -136,7 +129,10 @@ end
 -- ══════════════════════════════════════════
 local function scanAllBooths(statusLabel)
     local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
-    if not boothsFolder then return end
+    if not boothsFolder then 
+        error("Could not find __THINGS.Booths in workspace!")
+        return 
+    end
 
     local myGems = getGems()
     local foundCount = 0
@@ -171,19 +167,18 @@ local function scanAllBooths(statusLabel)
                                 local pricePerItem = parsePrice(costLabel.Text)
                                 local maxPrice = target.MaxPrice or math.huge
                                 
-                                print(string.format("[BoothSniper] Found target %s! Booth Price: %d | Your Max Price: %d", target.AssetID, pricePerItem, maxPrice))
+                                print(string.format("[BoothSniper] Match! ID: %s | Price: %d | MaxPrice: %d", cleanFoundID, pricePerItem, maxPrice))
 
                                 if pricePerItem > maxPrice then
                                     if statusLabel then
-                                        statusLabel.Text = string.format("❌ Skipped (Overpriced): %s", costLabel.Text)
+                                        statusLabel.Text = string.format("❌ Overpriced: %s/ea", costLabel.Text)
                                         statusLabel.TextColor3 = Color3.fromRGB(230, 150, 80)
                                         uiUpdated = true
                                     end
-                                    print("[BoothSniper] -> Skipped: Price too high.")
                                     continue
                                 end
                                 
-                                local stockAvailable = itemBox:GetAttribute("Quantity") or 1
+                                local stockAvailable = tonumber(itemBox:GetAttribute("Quantity")) or 1
                                 local maxAffordable = math.floor(myGems / pricePerItem)
                                 local buyAmount = math.min(maxAffordable, stockAvailable)
                                 
@@ -194,19 +189,9 @@ local function scanAllBooths(statusLabel)
                                         uiUpdated = true
                                     end
                                     
-                                    print(string.format("[BoothSniper] -> Attempting to buy %d items...", buyAmount))
                                     local guid = itemBox.Name
-                                    task.spawn(function()
-                                        purchaseItem(ownerID, guid, buyAmount)
-                                    end)
-                                    task.wait(0.5)
-                                else
-                                    if statusLabel then
-                                        statusLabel.Text = "❌ Found target, but not enough gems."
-                                        statusLabel.TextColor3 = Color3.fromRGB(230, 80, 80)
-                                        uiUpdated = true
-                                    end
-                                    print("[BoothSniper] -> Skipped: Not enough gems.")
+                                    task.spawn(function() purchaseItem(ownerID, guid, buyAmount) end)
+                                    task.wait(0.5) 
                                 end
                             end
                         end
@@ -217,12 +202,11 @@ local function scanAllBooths(statusLabel)
     end
 
     if isScanning and statusLabel and not uiUpdated then
-        statusLabel.Text = string.format("🔍 Scanning for %d targeted items...", #_G.BoothSniperSettings.Items)
+        statusLabel.Text = string.format("🔍 Scanning for %d targets...", #_G.BoothSniperSettings.Items)
         statusLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
     end
 end
 
--- Execute Pre-Load API fetches
 preLoadTargets()
 
 -- ══════════════════════════════════════════
@@ -315,7 +299,10 @@ if _G.BoothSniperSettings.ShowGUI then
             
             task.spawn(function()
                 while isScanning do
-                    pcall(function() scanAllBooths(Status) end)
+                    local success, err = pcall(function() scanAllBooths(Status) end)
+                    if not success then
+                        warn("[BoothSniper] CRASH ERROR:", err) -- THIS PRINTS THE ERROR NOW!
+                    end
                     task.wait(_G.BoothSniperSettings.ScanDelay)
                 end
             end)
@@ -325,7 +312,10 @@ else
     isScanning = true
     task.spawn(function()
         while isScanning do
-            pcall(function() scanAllBooths(nil) end)
+            local success, err = pcall(function() scanAllBooths(nil) end)
+            if not success then
+                warn("[BoothSniper] CRASH ERROR:", err)
+            end
             task.wait(_G.BoothSniperSettings.ScanDelay)
         end
     end)
