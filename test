@@ -1,3 +1,8 @@
+-- Wait for the game to fully load before doing anything
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
 -- ══════════════════════════════════════════
 -- FAILSAFE & GHOST KILLER
 -- ══════════════════════════════════════════
@@ -6,11 +11,14 @@ _G.BoothSniperServerHopLoaded = true
 if not _G.BoothSniperSettings then
     _G.BoothSniperSettings = {
         ShowGUI = true, ScanDelay = 0.5, AutoHop = true, 
-        TerminalSearch = true, RandomJoin = true, HopDelay = 5, Items = {}
+        TerminalSearch = true, RandomJoin = true, HopDelay = 5, 
+        AutoExecute = true, -- NEW: Toggle Auto-Execute on rejoin
+        Items = {}
     }
 end
 if _G.BoothSniperSettings.ShowGUI == nil then _G.BoothSniperSettings.ShowGUI = true end
 if _G.BoothSniperSettings.AutoHop == nil then _G.BoothSniperSettings.AutoHop = false end
+if _G.BoothSniperSettings.AutoExecute == nil then _G.BoothSniperSettings.AutoExecute = true end
 
 _G.BoothSniperRunID = (_G.BoothSniperRunID or 0) + 1
 local currentRunID = _G.BoothSniperRunID
@@ -21,11 +29,17 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
-for _, gui in ipairs(game:GetService("CoreGui"):GetChildren()) do
+-- Wait for UI to be ready
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
+local CoreGui = game:GetService("CoreGui")
+
+for _, gui in ipairs(CoreGui:GetChildren()) do
     if gui.Name == "AutoScannerGui" then gui:Destroy() end
 end
-for _, gui in ipairs(LocalPlayer:WaitForChild("PlayerGui"):GetChildren()) do
-    if gui.Name == "AutoScannerGui" then gui:Destroy() end
+if PlayerGui then
+    for _, gui in ipairs(PlayerGui:GetChildren()) do
+        if gui.Name == "AutoScannerGui" then gui:Destroy() end
+    end
 end
 
 local isScanning = false
@@ -40,12 +54,13 @@ local addLog = function(msg, color) end
 -- SINGLE-FIRE TELEPORT QUEUE
 -- ══════════════════════════════════════════
 local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or getgenv().queue_on_teleport
-if queue_on_teleport and not _G.BoothSniperQueueSet then
+if _G.BoothSniperSettings.AutoExecute and queue_on_teleport and not _G.BoothSniperQueueSet then
     _G.BoothSniperQueueSet = true
     LocalPlayer.OnTeleport:Connect(function()
         local settingsJSON = HttpService:JSONEncode(_G.BoothSniperSettings)
         local autoRunScript = string.format([[
-            task.wait(2) 
+            if not game:IsLoaded() then game.Loaded:Wait() end
+            task.wait(3) 
             if _G.BoothSniperServerHopLoaded then return end 
             local HttpService = game:GetService("HttpService")
             _G.BoothSniperSettings = HttpService:JSONDecode([=[%s]=])
@@ -216,7 +231,6 @@ local function scanAllBooths(statusLabel)
                                         local buyAmount = math.min(maxAffordable, stockAvailable)
                                         
                                         if buyAmount > 0 then
-                                            -- Step 1: Log Attempt
                                             addLog(string.format("⌛ Attempting to buy %dx %s...", buyAmount, itemNameDisplay), Color3.fromRGB(200, 200, 100))
                                             if statusLabel then 
                                                 statusLabel.Text = string.format("⌛ Buying %dx %s!", buyAmount, itemNameDisplay)
@@ -224,13 +238,12 @@ local function scanAllBooths(statusLabel)
                                                 statusTimeout = os.time() + 3
                                             end
                                             
-                                            -- Step 2: Fire Remote and check response
                                             task.spawn(function() 
                                                 local success, response = purchaseItem(ownerID, guid, buyAmount)
                                                 if success and response ~= false then
                                                     addLog(string.format("✅ Successfully bought %s!", itemNameDisplay), Color3.fromRGB(100, 255, 130))
                                                 else
-                                                    addLog(string.format("❌ Purchase failed for %s (Sold/Error)", itemNameDisplay), Color3.fromRGB(230, 80, 80))
+                                                    addLog(string.format("❌ Purchase failed for %s", itemNameDisplay), Color3.fromRGB(230, 80, 80))
                                                 end
                                             end)
                                             
@@ -277,7 +290,7 @@ if _G.BoothSniperSettings.ShowGUI then
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "AutoScannerGui"
     ScreenGui.ResetOnSpawn = false
-    ScreenGui.Parent = game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
+    ScreenGui.Parent = CoreGui or PlayerGui
 
     local Frame = Instance.new("Frame")
     Frame.Size = UDim2.new(0, 320, 0, 280)
@@ -349,7 +362,6 @@ if _G.BoothSniperSettings.ShowGUI then
     LogList.Padding = UDim.new(0, 2)
 
     addLog = function(msg, color)
-        -- Check if user is scrolled to the bottom BEFORE adding the new text
         local atBottom = false
         if LogList.AbsoluteContentSize.Y <= LogFrame.AbsoluteWindowSize.Y or LogFrame.CanvasPosition.Y + LogFrame.AbsoluteWindowSize.Y >= LogList.AbsoluteContentSize.Y - 30 then
             atBottom = true
@@ -366,7 +378,6 @@ if _G.BoothSniperSettings.ShowGUI then
         lbl.TextWrapped = true
         lbl.Parent = LogFrame
         
-        -- Only scroll if they were already at the bottom
         if atBottom then
             task.spawn(function()
                 task.wait(0.05)
