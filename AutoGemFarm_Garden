@@ -1,4 +1,4 @@
-print("v2.4")
+print("v2.5")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -118,6 +118,7 @@ if _G.BoothSniperSettings.AutoOpenBags then
             if not bagRemote then task.wait(1) end
         end
         alertDebug("[AI] Bag Opener Hooked & Running!", 2)
+        -- Exact working args: "Seed Bag", 100
         while task.wait(0.1) do
             if currentRunID ~= _G.BoothSniperRunID then return end
             pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
@@ -235,93 +236,78 @@ else
     local addLog = function(msg, color) end
 
     -- ================================================================
-    -- Validate a job_id is not full using Roblox public server list
-    -- Returns true if the server has space
+    -- Terminal search helper
+    -- The remote returns a SINGLE flat table per call:
+    -- { user_id=..., place_id=..., job_id=..., booth=... }
+    -- NOT an array! Read keys directly from result.
     -- ================================================================
-    local function isServerJoinable(placeId, targetJobId)
-        local ok, res = pcall(function()
-            return game:HttpGet("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Desc&limit=100")
+    local function terminalSearch(termClass, itemName)
+        local Network = ReplicatedStorage:FindFirstChild("Network")
+        if not Network then return nil end
+        local remote = Network:FindFirstChild("TradingTerminal_Search")
+        if not remote then return nil end
+
+        local args = {
+            termClass,
+            '{"id":"' .. itemName .. '"}',
+            nil,
+            true
+        }
+        local ok, result = pcall(function()
+            return remote:InvokeServer(unpack(args))
         end)
-        if not ok or not res or res == "" then return true end -- assume joinable if API fails
-        local dok, data = pcall(function() return HttpService:JSONDecode(res) end)
-        if not dok or not data or not data.data then return true end
-        for _, server in ipairs(data.data) do
-            if server.id == targetJobId then
-                return server.playing ~= nil and server.maxPlayers ~= nil and server.playing < server.maxPlayers
-            end
+        if not ok then
+            print("[Terminal] Error:", result)
+            return nil
         end
-        -- Not found in public list = private or expired, skip it
-        return false
+        if type(result) ~= "table" then return nil end
+        -- Result is a flat table: { user_id, place_id, job_id, booth }
+        -- job_id is the key field we need
+        if result.job_id then
+            return result
+        end
+        return nil
     end
 
     -- ================================================================
     -- SERVER HOP
-    -- TerminalSearch: uses in-game TradingTerminal_Search, validates
-    -- each result for joinability before teleporting.
-    -- RandomJoin: fallback random public server.
     -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
 
         if _G.BoothSniperSettings.TerminalSearch then
-            local terminalRemote = ReplicatedStorage:FindFirstChild("Network") and
-                ReplicatedStorage.Network:FindFirstChild("TradingTerminal_Search")
+            local candidates = {}
 
-            if terminalRemote then
-                -- Collect ALL results from ALL items first
-                local allCandidates = {}
+            for _, target in ipairs(_G.BoothSniperSettings.Items) do
+                local itemName = target.ItemName
+                local termClass = target.TerminalClass or "Misc"
+                if not itemName then continue end
 
-                for _, target in ipairs(_G.BoothSniperSettings.Items) do
-                    local itemName = target.ItemName
-                    local termClass = target.TerminalClass or "Misc"
-                    if not itemName then continue end
-
-                    updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
-
-                    local searchArgs = {
-                        termClass,
-                        '{"id":"' .. itemName .. '"}',
-                        [4] = true
-                    }
-                    local ok, results = pcall(function()
-                        return terminalRemote:InvokeServer(unpack(searchArgs, 1, 4))
-                    end)
-
-                    if ok and type(results) == "table" then
-                        for _, entry in ipairs(results) do
-                            local jobId = entry.job_id
-                            local placeId = entry.place_id or game.PlaceId
-                            if jobId and jobId ~= game.JobId then
-                                table.insert(allCandidates, { jobId = jobId, placeId = placeId, itemName = itemName })
-                            end
-                        end
-                    end
+                updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
+                local entry = terminalSearch(termClass, itemName)
+                if entry and entry.job_id and entry.job_id ~= game.JobId then
+                    table.insert(candidates, {
+                        jobId   = entry.job_id,
+                        placeId = entry.place_id or game.PlaceId,
+                        itemName = itemName
+                    })
+                    print(string.format("[Terminal] Found server for '%s': job=%s", itemName, entry.job_id))
                 end
+            end
 
-                -- Now validate each candidate and pick the first joinable one
-                if #allCandidates > 0 then
-                    updateDebug(string.format("🗳️ Validating %d candidate server(s)...", #allCandidates))
-                    for _, candidate in ipairs(allCandidates) do
-                        updateDebug(string.format("🗳️ Checking server for %s...", candidate.itemName))
-                        if isServerJoinable(candidate.placeId, candidate.jobId) then
-                            alertDebug(string.format("🗳️ Joining server with %s!", candidate.itemName), 4)
-                            addLog(string.format("🗳️ Hopping to server with %s", candidate.itemName), Color3.fromRGB(100, 200, 255))
-                            TeleportService:TeleportToPlaceInstance(candidate.placeId, candidate.jobId, LocalPlayer)
-                            task.wait(10)
-                            isHopping = false
-                            timeInServer = 0
-                            return
-                        else
-                            print(string.format("[Terminal] Server for %s is full or gone, skipping.", candidate.itemName))
-                            addLog(string.format("⚠️ Server full/gone for %s, skipping", candidate.itemName), Color3.fromRGB(230, 150, 80))
-                        end
-                    end
-                    updateDebug("⚠️ All terminal servers full/gone, random hopping...")
-                else
-                    updateDebug("⚠️ Terminal: no results, random hopping...")
-                end
+            if #candidates > 0 then
+                -- Teleport to the first valid candidate
+                -- (All come from the trading terminal so they should be joinable)
+                local pick = candidates[1]
+                alertDebug(string.format("🗳️ Joining server with '%s'!", pick.itemName), 4)
+                addLog(string.format("🗳️ Hopping: %s", pick.itemName), Color3.fromRGB(100, 200, 255))
+                TeleportService:TeleportToPlaceInstance(pick.placeId, pick.jobId, LocalPlayer)
+                task.wait(10)
+                isHopping = false
+                timeInServer = 0
+                return
             else
-                updateDebug("⚠️ Terminal remote not found, random hopping...")
+                updateDebug("⚠️ Terminal: no results, random hopping...")
             end
         end
 
@@ -335,12 +321,18 @@ else
                 if rok and rdata and rdata.data then
                     local validServers = {}
                     for _, server in ipairs(rdata.data) do
-                        if server.playing and server.maxPlayers and server.playing < server.maxPlayers and server.id ~= game.JobId then
+                        if server.playing and server.maxPlayers
+                            and server.playing < server.maxPlayers
+                            and server.id ~= game.JobId then
                             table.insert(validServers, server.id)
                         end
                     end
                     if #validServers > 0 then
-                        TeleportService:TeleportToPlaceInstance(game.PlaceId, validServers[math.random(1, #validServers)], LocalPlayer)
+                        TeleportService:TeleportToPlaceInstance(
+                            game.PlaceId,
+                            validServers[math.random(1, #validServers)],
+                            LocalPlayer
+                        )
                         task.wait(10)
                     end
                 end
@@ -354,12 +346,15 @@ else
     local function fetchItemAssetID(class, itemName)
         local cacheKey = class .. "_" .. itemName
         if cachedAssetIDs[cacheKey] then return cachedAssetIDs[cacheKey] end
-        local ok, result = pcall(function() return game:HttpGet(string.format("https://ps99.biggamesapi.io/api/collection/%s", class)) end)
+        local ok, result = pcall(function()
+            return game:HttpGet(string.format("https://ps99.biggamesapi.io/api/collection/%s", class))
+        end)
         if ok and result then
             local decoded = HttpService:JSONDecode(result)
             if decoded and decoded.data then
                 for _, item in pairs(decoded.data) do
-                    if item.configName and item.configName:lower() == itemName:lower() and item.configData and item.configData.Icon then
+                    if item.configName and item.configName:lower() == itemName:lower()
+                        and item.configData and item.configData.Icon then
                         local id = tostring(item.configData.Icon):match("%d+")
                         if id then cachedAssetIDs[cacheKey] = id; return id end
                     end
@@ -376,7 +371,9 @@ else
         end
     end
 
-    local function getCleanID(assetText) return assetText and tostring(assetText):match("%d+") or "" end
+    local function getCleanID(assetText)
+        return assetText and tostring(assetText):match("%d+") or ""
+    end
 
     local function purchaseItem(ownerID, itemGUID, amount)
         local args = {
@@ -398,7 +395,10 @@ else
             }
         }
         local success, response = pcall(function()
-            return ReplicatedStorage:WaitForChild("Network"):WaitForChild("Booths_RequestPurchase"):InvokeServer(unpack(args))
+            return ReplicatedStorage
+                :WaitForChild("Network")
+                :WaitForChild("Booths_RequestPurchase")
+                :InvokeServer(unpack(args))
         end)
         return success, response
     end
@@ -408,7 +408,10 @@ else
         timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
 
         local myGems = getGems()
-        updateDebug(string.format("🎯 Sniping | Gems: %d | Hop In: %ds", myGems, math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer))))
+        updateDebug(string.format("🎯 Sniping | Gems: %d | Hop In: %ds",
+            myGems,
+            math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer))
+        ))
 
         if myGems < 100000 then
             isScanning = false
@@ -417,60 +420,75 @@ else
             return
         end
 
-        local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
+        local boothsFolder = workspace:FindFirstChild("__THINGS")
+            and workspace.__THINGS:FindFirstChild("Booths")
         if not boothsFolder then return end
 
         for _, booth in ipairs(boothsFolder:GetChildren()) do
             local ownerID = booth:GetAttribute("Owner")
             if not ownerID or ownerID == LocalPlayer.UserId then continue end
 
-            local petScroll = booth:FindFirstChild("Pets") and booth.Pets:FindFirstChild("BoothTop") and booth.Pets.BoothTop:FindFirstChild("PetScroll")
-            if petScroll then
-                for _, itemBox in ipairs(petScroll:GetChildren()) do
-                    if itemBox:IsA("UIListLayout") or itemBox:IsA("UIPadding") then continue end
-                    local iconLabel = itemBox:FindFirstChild("Holder") and itemBox.Holder:FindFirstChild("ItemSlot") and itemBox.Holder.ItemSlot:FindFirstChild("Icon")
+            local petScroll = booth:FindFirstChild("Pets")
+                and booth.Pets:FindFirstChild("BoothTop")
+                and booth.Pets.BoothTop:FindFirstChild("PetScroll")
+            if not petScroll then continue end
 
-                    if iconLabel and iconLabel:IsA("ImageLabel") then
-                        local cleanFoundID = getCleanID(iconLabel.Image)
-                        local guid = itemBox.Name
+            for _, itemBox in ipairs(petScroll:GetChildren()) do
+                if itemBox:IsA("UIListLayout") or itemBox:IsA("UIPadding") then continue end
+                local iconLabel = itemBox:FindFirstChild("Holder")
+                    and itemBox.Holder:FindFirstChild("ItemSlot")
+                    and itemBox.Holder.ItemSlot:FindFirstChild("Icon")
 
-                        for _, target in ipairs(_G.BoothSniperSettings.Items) do
-                            if target.AssetID and cleanFoundID == getCleanID(target.AssetID) then
-                                local costLabel = itemBox:FindFirstChild("Buy") and itemBox.Buy:FindFirstChild("Cost")
-                                if costLabel and costLabel:IsA("TextLabel") then
-                                    local pricePerItem = parsePrice(costLabel.Text)
-                                    local maxPrice = target.MaxPrice or math.huge
-                                    local itemNameDisplay = target.ItemName or target.AssetID
+                if iconLabel and iconLabel:IsA("ImageLabel") then
+                    local cleanFoundID = getCleanID(iconLabel.Image)
+                    local guid = itemBox.Name
 
-                                    if not seenItems[guid] then
-                                        seenItems[guid] = true
-                                        if pricePerItem <= maxPrice then
-                                            local stockAvailable = tonumber(itemBox:GetAttribute("Quantity")) or 1
-                                            local maxAffordable = math.floor(myGems / pricePerItem)
-                                            local buyAmount = math.min(maxAffordable, stockAvailable)
+                    for _, target in ipairs(_G.BoothSniperSettings.Items) do
+                        if target.AssetID and cleanFoundID == getCleanID(target.AssetID) then
+                            local costLabel = itemBox:FindFirstChild("Buy")
+                                and itemBox.Buy:FindFirstChild("Cost")
+                            if costLabel and costLabel:IsA("TextLabel") then
+                                local pricePerItem = parsePrice(costLabel.Text)
+                                local maxPrice = target.MaxPrice or math.huge
+                                local itemNameDisplay = target.ItemName or target.AssetID
 
-                                            if buyAmount > 0 then
-                                                alertDebug(string.format("⌛ FOUND %s | %s | Buying x%d...", itemNameDisplay, costLabel.Text, buyAmount), 4)
-                                                addLog(string.format("⌛ Buying %dx %s @ %s", buyAmount, itemNameDisplay, costLabel.Text), Color3.fromRGB(200, 200, 100))
-                                                task.spawn(function()
-                                                    local startGems = getGems()
-                                                    local success, response = purchaseItem(ownerID, guid, buyAmount)
-                                                    task.wait(0.5)
-                                                    if success and (response == true or getGems() < startGems) then
-                                                        alertDebug(string.format("✅ BOUGHT %s @ %s!", itemNameDisplay, costLabel.Text), 4)
-                                                        addLog(string.format("✅ Bought %s!", itemNameDisplay), Color3.fromRGB(100, 255, 130))
-                                                    else
-                                                        alertDebug(string.format("❌ FAILED %s. Retrying...", itemNameDisplay), 3)
-                                                        seenItems[guid] = nil
-                                                    end
-                                                end)
-                                                task.wait(1)
-                                                timeInServer = 0
-                                            end
-                                        else
-                                            alertDebug(string.format("⚠️ SKIP %s | %s > Max %s", itemNameDisplay, costLabel.Text, tostring(target.MaxPrice)), 2)
-                                            addLog(string.format("⚠️ Skipped %s: %s (over max)", itemNameDisplay, costLabel.Text), Color3.fromRGB(230, 150, 80))
+                                if not seenItems[guid] then
+                                    seenItems[guid] = true
+                                    if pricePerItem <= maxPrice then
+                                        local stockAvailable = tonumber(itemBox:GetAttribute("Quantity")) or 1
+                                        local maxAffordable = math.floor(myGems / pricePerItem)
+                                        local buyAmount = math.min(maxAffordable, stockAvailable)
+
+                                        if buyAmount > 0 then
+                                            alertDebug(string.format("⌛ FOUND %s | %s | Buying x%d...",
+                                                itemNameDisplay, costLabel.Text, buyAmount), 4)
+                                            addLog(string.format("⌛ Buying %dx %s @ %s",
+                                                buyAmount, itemNameDisplay, costLabel.Text),
+                                                Color3.fromRGB(200, 200, 100))
+                                            task.spawn(function()
+                                                local startGems = getGems()
+                                                local success, response = purchaseItem(ownerID, guid, buyAmount)
+                                                task.wait(0.5)
+                                                if success and (response == true or getGems() < startGems) then
+                                                    alertDebug(string.format("✅ BOUGHT %s @ %s!",
+                                                        itemNameDisplay, costLabel.Text), 4)
+                                                    addLog(string.format("✅ Bought %s!", itemNameDisplay),
+                                                        Color3.fromRGB(100, 255, 130))
+                                                else
+                                                    alertDebug(string.format("❌ FAILED %s. Retrying...",
+                                                        itemNameDisplay), 3)
+                                                    seenItems[guid] = nil
+                                                end
+                                            end)
+                                            task.wait(1)
+                                            timeInServer = 0
                                         end
+                                    else
+                                        alertDebug(string.format("⚠️ SKIP %s | %s > Max %s",
+                                            itemNameDisplay, costLabel.Text, tostring(target.MaxPrice)), 2)
+                                        addLog(string.format("⚠️ Skipped %s: %s (over max)",
+                                            itemNameDisplay, costLabel.Text),
+                                            Color3.fromRGB(230, 150, 80))
                                     end
                                 end
                             end
@@ -480,7 +498,8 @@ else
             end
         end
 
-        if _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
+        if _G.BoothSniperSettings.AutoHop
+            and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
             isHopping = true
             task.spawn(doServerHop)
         end
@@ -513,11 +532,14 @@ else
             lbl.TextSize = 12
             lbl.Font = Enum.Font.Gotham
             lbl.TextXAlignment = Enum.TextXAlignment.Left
-            task.spawn(function() task.wait(0.05) LogFrame.CanvasPosition = Vector2.new(0, LogList.AbsoluteContentSize.Y) end)
+            task.spawn(function()
+                task.wait(0.05)
+                LogFrame.CanvasPosition = Vector2.new(0, LogList.AbsoluteContentSize.Y)
+            end)
         end
     end
 
-    -- SCAN LOOP - always runs
+    -- SCAN LOOP
     task.spawn(function()
         while isScanning do
             if currentRunID ~= _G.BoothSniperRunID then break end
@@ -530,7 +552,9 @@ end
 -- ══════════════════════════════════════════
 -- TELEPORT QUEUE
 -- ══════════════════════════════════════════
-local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or getgenv().queue_on_teleport
+local queue_on_teleport = queue_on_teleport
+    or (syn and syn.queue_on_teleport)
+    or getgenv().queue_on_teleport
 if _G.BoothSniperSettings.AutoExecute and queue_on_teleport and not _G.BoothSniperQueueSet then
     _G.BoothSniperQueueSet = true
     LocalPlayer.OnTeleport:Connect(function()
