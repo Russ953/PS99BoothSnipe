@@ -1,0 +1,443 @@
+-- Wait for the game to fully load before doing anything
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+-- ══════════════════════════════════════════
+-- FAILSAFE & GHOST KILLER
+-- ══════════════════════════════════════════
+_G.BoothSniperServerHopLoaded = true
+
+if not _G.BoothSniperSettings then
+    _G.BoothSniperSettings = {
+        ShowGUI = true, ScanDelay = 0.5, AutoHop = true, 
+        TerminalSearch = true, RandomJoin = true, HopDelay = 5, 
+        AutoExecute = true, -- NEW: Toggle Auto-Execute on rejoin
+        Items = {}
+    }
+end
+if _G.BoothSniperSettings.ShowGUI == nil then _G.BoothSniperSettings.ShowGUI = true end
+if _G.BoothSniperSettings.AutoHop == nil then _G.BoothSniperSettings.AutoHop = false end
+if _G.BoothSniperSettings.AutoExecute == nil then _G.BoothSniperSettings.AutoExecute = true end
+
+_G.BoothSniperRunID = (_G.BoothSniperRunID or 0) + 1
+local currentRunID = _G.BoothSniperRunID
+
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+-- Wait for UI to be ready
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
+local CoreGui = game:GetService("CoreGui")
+
+for _, gui in ipairs(CoreGui:GetChildren()) do
+    if gui.Name == "AutoScannerGui" then gui:Destroy() end
+end
+if PlayerGui then
+    for _, gui in ipairs(PlayerGui:GetChildren()) do
+        if gui.Name == "AutoScannerGui" then gui:Destroy() end
+    end
+end
+
+local isScanning = false
+local isHopping = false
+local timeInServer = 0
+local statusTimeout = 0 
+local cachedAssetIDs = {}
+local seenItems = {}
+local addLog = function(msg, color) end
+
+-- ══════════════════════════════════════════
+-- SINGLE-FIRE TELEPORT QUEUE
+-- ══════════════════════════════════════════
+local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or getgenv().queue_on_teleport
+if _G.BoothSniperSettings.AutoExecute and queue_on_teleport and not _G.BoothSniperQueueSet then
+    _G.BoothSniperQueueSet = true
+    LocalPlayer.OnTeleport:Connect(function()
+        local settingsJSON = HttpService:JSONEncode(_G.BoothSniperSettings)
+        local autoRunScript = string.format([[
+            if not game:IsLoaded() then game.Loaded:Wait() end
+            task.wait(3) 
+            if _G.BoothSniperServerHopLoaded then return end 
+            local HttpService = game:GetService("HttpService")
+            _G.BoothSniperSettings = HttpService:JSONDecode([=[%s]=])
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/Russ953/PS99BoothSnipe/main/test"))()
+        ]], settingsJSON)
+        pcall(function() queue_on_teleport(autoRunScript) end)
+    end)
+end
+
+-- ══════════════════════════════════════════
+-- AUTO-HOP LOGIC
+-- ══════════════════════════════════════════
+local function extractJobId(tbl)
+    if type(tbl) == "string" and #tbl == 36 and tbl:match("%w+-%w+-%w+-%w+-%w+") then return tbl
+    elseif type(tbl) == "table" then
+        if tbl.jobId then return tbl.jobId, tbl.placeId end
+        if tbl.JobId then return tbl.JobId, tbl.PlaceId end
+        for _, v in pairs(tbl) do
+            local j, p = extractJobId(v)
+            if j then return j, p end
+        end
+    end
+    return nil
+end
+
+local function doServerHop(statusLabel)
+    if currentRunID ~= _G.BoothSniperRunID then return end
+
+    if _G.BoothSniperSettings.TerminalSearch then
+        if statusLabel then statusLabel.Text = "📡 Searching Trading Terminal..."; statusTimeout = os.time() + 5 end
+        local network = ReplicatedStorage:WaitForChild("Network", 5)
+        local terminalRemote = network and network:WaitForChild("TradingTerminal_Search", 5)
+        
+        if terminalRemote then
+            for _, target in ipairs(_G.BoothSniperSettings.Items) do
+                if target.ItemName then
+                    local searchArgs = { target.TerminalClass or target.Class:gsub("Items", ""), '{"id":"' .. target.ItemName .. '"}', nil, true }
+                    local success, response = pcall(function() return terminalRemote:InvokeServer(unpack(searchArgs)) end)
+                    if success and response then
+                        local jobId, placeId = extractJobId(response)
+                        if jobId and jobId ~= game.JobId then
+                            if statusLabel then statusLabel.Text = "🚀 Terminal Server Found! Teleporting..."; statusTimeout = os.time() + 10 end
+                            TeleportService:TeleportToPlaceInstance(placeId or game.PlaceId, jobId, LocalPlayer)
+                            task.wait(10)
+                        end
+                    end
+                end
+                task.wait(0.5)
+            end
+        end
+    end
+
+    if _G.BoothSniperSettings.RandomJoin then
+        if statusLabel then statusLabel.Text = "🎲 Terminal empty. Random Hopping..."; statusTimeout = os.time() + 5 end
+        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
+        local success, result = pcall(function() return game:HttpGet(url) end)
+        if success then
+            local data = HttpService:JSONDecode(result)
+            if data and data.data then
+                local validServers = {}
+                for _, server in ipairs(data.data) do
+                    if server.playing and server.maxPlayers and server.playing < server.maxPlayers and server.id ~= game.JobId then
+                        table.insert(validServers, server.id)
+                    end
+                end
+                if #validServers > 0 then
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, validServers[math.random(1, #validServers)], LocalPlayer)
+                    task.wait(10)
+                end
+            end
+        end
+    end
+    
+    isHopping = false
+    timeInServer = 0 
+end
+
+-- ══════════════════════════════════════════
+-- API & SCANNER UTILS
+-- ══════════════════════════════════════════
+local function fetchItemAssetID(class, itemName)
+    local cacheKey = class .. "_" .. itemName
+    if cachedAssetIDs[cacheKey] then return cachedAssetIDs[cacheKey] end
+    local ok, result = pcall(function() return game:HttpGet(string.format("https://ps99.biggamesapi.io/api/collection/%s", class)) end)
+    if ok and result then
+        local decoded = HttpService:JSONDecode(result)
+        if decoded and decoded.data then
+            for _, item in pairs(decoded.data) do
+                if item.configName and item.configName:lower() == itemName:lower() and item.configData and item.configData.Icon then
+                    local id = tostring(item.configData.Icon):match("%d+")
+                    if id then cachedAssetIDs[cacheKey] = id; return id end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function getCleanID(assetText) return assetText and tostring(assetText):match("%d+") or "" end
+local function parsePrice(text)
+    if type(text) ~= "string" then return 0 end
+    text = text:lower():gsub(",", ""):gsub(" ", "")
+    for suffix, mult in pairs({ t = 1e12, b = 1e9, m = 1e6, k = 1e3 }) do
+        local num = text:match("([%d%.]+)" .. suffix)
+        if num then return tonumber(num) * mult end
+    end
+    return tonumber(text:match("([%d%.]+)")) or 0
+end
+
+local function getGems()
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    if not ls then return 0 end
+    for _, stat in ipairs(ls:GetChildren()) do
+        if stat.Name:match("Diamonds") or stat.Name:match("💎") then return tonumber(stat.Value) or 0 end
+    end
+    return 0
+end
+
+local function purchaseItem(ownerID, itemGUID, amount)
+    local args = { tonumber(ownerID), { [tostring(itemGUID)] = tonumber(amount) }, { Caller = { LineNumber = 527, ScriptClass = "ModuleScript", Variadic = false, Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157", ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds", FunctionName = "PromptPurchase2", Handle = "function: 0xfa15618739cde075", ScriptType = "Instance", ParameterCount = 2, SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds" } } }
+    local success, response = pcall(function()
+        return game:GetService("ReplicatedStorage"):WaitForChild("Network"):WaitForChild("Booths_RequestPurchase"):InvokeServer(unpack(args))
+    end)
+    return success, response
+end
+
+-- ══════════════════════════════════════════
+-- MAIN SCANNER LOOP
+-- ══════════════════════════════════════════
+local function scanAllBooths(statusLabel)
+    if currentRunID ~= _G.BoothSniperRunID or isHopping then return end 
+    timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
+
+    local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
+    if not boothsFolder then return end
+
+    local myGems = getGems()
+
+    for _, booth in ipairs(boothsFolder:GetChildren()) do
+        local ownerID = booth:GetAttribute("Owner")
+        if not ownerID or ownerID == LocalPlayer.UserId then continue end 
+
+        local petScroll = booth:FindFirstChild("Pets") and booth.Pets:FindFirstChild("BoothTop") and booth.Pets.BoothTop:FindFirstChild("PetScroll")
+        if petScroll then
+            for _, itemBox in ipairs(petScroll:GetChildren()) do
+                if itemBox:IsA("UIListLayout") or itemBox:IsA("UIPadding") then continue end
+                local iconLabel = itemBox:FindFirstChild("Holder") and itemBox.Holder:FindFirstChild("ItemSlot") and itemBox.Holder.ItemSlot:FindFirstChild("Icon")
+
+                if iconLabel and iconLabel:IsA("ImageLabel") then
+                    local cleanFoundID = getCleanID(iconLabel.Image)
+                    local guid = itemBox.Name
+
+                    for _, target in ipairs(_G.BoothSniperSettings.Items) do
+                        if target.AssetID and cleanFoundID == getCleanID(target.AssetID) then
+                            
+                            local costLabel = itemBox:FindFirstChild("Buy") and itemBox.Buy:FindFirstChild("Cost")
+                            if costLabel and costLabel:IsA("TextLabel") then
+                                local pricePerItem = parsePrice(costLabel.Text)
+                                local maxPrice = target.MaxPrice or math.huge
+                                local itemNameDisplay = target.ItemName or target.AssetID
+                                
+                                if not seenItems[guid] then
+                                    seenItems[guid] = true
+                                    
+                                    if pricePerItem <= maxPrice then
+                                        local stockAvailable = tonumber(itemBox:GetAttribute("Quantity")) or 1
+                                        local maxAffordable = math.floor(myGems / pricePerItem)
+                                        local buyAmount = math.min(maxAffordable, stockAvailable)
+                                        
+                                        if buyAmount > 0 then
+                                            addLog(string.format("⌛ Attempting to buy %dx %s...", buyAmount, itemNameDisplay), Color3.fromRGB(200, 200, 100))
+                                            if statusLabel then 
+                                                statusLabel.Text = string.format("⌛ Buying %dx %s!", buyAmount, itemNameDisplay)
+                                                statusLabel.TextColor3 = Color3.fromRGB(200, 200, 100)
+                                                statusTimeout = os.time() + 3
+                                            end
+                                            
+                                            task.spawn(function() 
+                                                local success, response = purchaseItem(ownerID, guid, buyAmount)
+                                                if success and response ~= false then
+                                                    addLog(string.format("✅ Successfully bought %s!", itemNameDisplay), Color3.fromRGB(100, 255, 130))
+                                                else
+                                                    addLog(string.format("❌ Purchase failed for %s", itemNameDisplay), Color3.fromRGB(230, 80, 80))
+                                                end
+                                            end)
+                                            
+                                            task.wait(1) 
+                                            timeInServer = 0 
+                                        else
+                                            addLog(string.format("❌ Found %s but not enough gems!", itemNameDisplay), Color3.fromRGB(230, 80, 80))
+                                        end
+                                    else
+                                        addLog(string.format("⚠️ Skipped %s: %s (Max: %s)", itemNameDisplay, costLabel.Text, tostring(maxPrice)), Color3.fromRGB(230, 150, 80))
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
+        isHopping = true
+        task.spawn(function() doServerHop(statusLabel) end)
+        return
+    end
+
+    if isScanning and statusLabel and not isHopping and os.time() > statusTimeout then
+        statusLabel.Text = string.format("🔍 Scanning... (Hop in %ds)", math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer)))
+        statusLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
+    end
+end
+
+for _, t in ipairs(_G.BoothSniperSettings.Items) do
+    if t.Class and t.ItemName and not t.AssetID then
+        local id = fetchItemAssetID(t.Class, t.ItemName)
+        if id then t.AssetID = id end
+    end
+end
+
+-- ══════════════════════════════════════════
+-- GUI BUILDER WITH SCROLLING LOG
+-- ══════════════════════════════════════════
+if _G.BoothSniperSettings.ShowGUI then
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "AutoScannerGui"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = CoreGui or PlayerGui
+
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0, 320, 0, 280)
+    Frame.Position = UDim2.new(0.5, -160, 0.5, -140)
+    Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    Frame.Parent = ScreenGui
+    Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 8)
+
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 30)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+    TitleBar.Parent = Frame
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, -40, 1, 0)
+    TitleLabel.Position = UDim2.new(0, 10, 0, 0)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = "🎯 Auto-Booth Sniper"
+    TitleLabel.TextColor3 = Color3.fromRGB(220, 220, 255)
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextSize = 14
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = TitleBar
+
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+    CloseBtn.Position = UDim2.new(1, -30, 0, 0)
+    CloseBtn.BackgroundTransparency = 1
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.TextSize = 16
+    CloseBtn.Parent = TitleBar
+
+    local Status = Instance.new("TextLabel")
+    Status.Size = UDim2.new(1, -20, 0, 20)
+    Status.Position = UDim2.new(0, 10, 0, 40)
+    Status.BackgroundTransparency = 1
+    Status.Text = "Idle. Ready to scan."
+    Status.TextColor3 = Color3.fromRGB(150, 150, 150)
+    Status.Font = Enum.Font.Gotham
+    Status.TextSize = 12
+    Status.Parent = Frame
+
+    local ToggleBtn = Instance.new("TextButton")
+    ToggleBtn.Size = UDim2.new(1, -20, 0, 35)
+    ToggleBtn.Position = UDim2.new(0, 10, 0, 65)
+    ToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 80)
+    ToggleBtn.Text = "▶ Start Scanner"
+    ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ToggleBtn.Font = Enum.Font.GothamBold
+    ToggleBtn.TextSize = 13
+    ToggleBtn.Parent = Frame
+    Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 6)
+
+    local LogFrame = Instance.new("ScrollingFrame")
+    LogFrame.Size = UDim2.new(1, -20, 1, -115)
+    LogFrame.Position = UDim2.new(0, 10, 0, 105)
+    LogFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+    LogFrame.BorderSizePixel = 0
+    LogFrame.ScrollBarThickness = 4
+    LogFrame.Parent = Frame
+    Instance.new("UICorner", LogFrame).CornerRadius = UDim.new(0, 6)
+
+    local LogList = Instance.new("UIListLayout")
+    LogList.Parent = LogFrame
+    LogList.SortOrder = Enum.SortOrder.LayoutOrder
+    LogList.Padding = UDim.new(0, 2)
+
+    addLog = function(msg, color)
+        local atBottom = false
+        if LogList.AbsoluteContentSize.Y <= LogFrame.AbsoluteWindowSize.Y or LogFrame.CanvasPosition.Y + LogFrame.AbsoluteWindowSize.Y >= LogList.AbsoluteContentSize.Y - 30 then
+            atBottom = true
+        end
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -5, 0, 16)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = " " .. msg
+        lbl.TextColor3 = color or Color3.fromRGB(200, 200, 200)
+        lbl.TextSize = 11
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextWrapped = true
+        lbl.Parent = LogFrame
+        
+        if atBottom then
+            task.spawn(function()
+                task.wait(0.05)
+                LogFrame.CanvasPosition = Vector2.new(0, LogList.AbsoluteContentSize.Y)
+            end)
+        end
+    end
+
+    CloseBtn.MouseButton1Click:Connect(function()
+        isScanning = false
+        ScreenGui:Destroy()
+    end)
+
+    ToggleBtn.MouseButton1Click:Connect(function()
+        if isScanning then
+            isScanning = false
+            ToggleBtn.Text = "▶ Start Scanner"
+            ToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 80)
+            Status.Text = "Stopped."
+        else
+            isScanning = true
+            timeInServer = 0
+            isHopping = false
+            seenItems = {} 
+            for _, c in ipairs(LogFrame:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+            
+            ToggleBtn.Text = "⏸ Stop Scanner"
+            ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+            
+            task.spawn(function()
+                while isScanning do
+                    if currentRunID ~= _G.BoothSniperRunID then break end
+                    pcall(function() scanAllBooths(Status) end)
+                    task.wait(_G.BoothSniperSettings.ScanDelay)
+                end
+            end)
+        end
+    end)
+    
+    if _G.BoothSniperSettings.AutoHop then
+        ToggleBtn.Text = "⏸ Stop Scanner"
+        ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+        isScanning = true
+        task.spawn(function()
+            while isScanning do
+                if currentRunID ~= _G.BoothSniperRunID then break end
+                pcall(function() scanAllBooths(Status) end)
+                task.wait(_G.BoothSniperSettings.ScanDelay)
+            end
+        end)
+    end
+else
+    isScanning = true
+    timeInServer = 0
+    isHopping = false
+    task.spawn(function()
+        while isScanning do
+            if currentRunID ~= _G.BoothSniperRunID then break end
+            pcall(function() scanAllBooths(nil) end)
+            task.wait(_G.BoothSniperSettings.ScanDelay)
+        end
+    end)
+end
