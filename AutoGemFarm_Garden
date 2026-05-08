@@ -140,11 +140,14 @@ if PLACE_ID == MAIN_GAME_ID then
             end
         end)
         
-        -- 3B. Open Seed Bags Loop
+                -- 3B. Open Seed Bags Loop (ULTRA FAST)
         task.spawn(function()
             while isFarming do
-                bagRemote:InvokeServer("Seed Bag", 100)
-                task.wait(0.5)
+                task.spawn(function()
+                    -- Wrapped in task.spawn so it doesn't yield waiting for the server
+                    pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
+                end)
+                task.wait(0.01) -- Spam as fast as possible
             end
         end)
         
