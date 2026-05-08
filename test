@@ -5,21 +5,112 @@ if not _G.BoothSniperSettings then
     _G.BoothSniperSettings = {
         ShowGUI = true,
         ScanDelay = 0.5,
+        AutoHop = true,
+        TerminalSearch = true,
+        RandomJoin = true,
+        HopDelay = 5,
         Items = {}
     }
 end
 
-if _G.BoothSniperSettings.ShowGUI == nil then
-    _G.BoothSniperSettings.ShowGUI = true
-end
+if _G.BoothSniperSettings.ShowGUI == nil then _G.BoothSniperSettings.ShowGUI = true end
+if _G.BoothSniperSettings.AutoHop == nil then _G.BoothSniperSettings.AutoHop = false end
 
 local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
 local isScanning = false
+local isHopping = false
+local timeInServer = 0
 local cachedAssetIDs = {}
+
+-- ══════════════════════════════════════════
+-- AUTO-HOP: Extract JobId from Terminal Response
+-- ══════════════════════════════════════════
+local function extractJobId(tbl)
+    if type(tbl) == "string" and #tbl == 36 and tbl:match("%w+-%w+-%w+-%w+-%w+") then
+        return tbl
+    elseif type(tbl) == "table" then
+        if tbl.jobId then return tbl.jobId, tbl.placeId end
+        if tbl.JobId then return tbl.JobId, tbl.PlaceId end
+        for _, v in pairs(tbl) do
+            local j, p = extractJobId(v)
+            if j then return j, p end
+        end
+    end
+    return nil
+end
+
+-- ══════════════════════════════════════════
+-- AUTO-HOP: Core Hop Logic
+-- ══════════════════════════════════════════
+local function doServerHop(statusLabel)
+    if _G.BoothSniperSettings.TerminalSearch then
+        if statusLabel then statusLabel.Text = "📡 Searching Trading Terminal..." end
+        print("[BoothSniper] Initiating Terminal Search...")
+        
+        local terminalRemote = ReplicatedStorage:WaitForChild("Network"):WaitForChild("TradingTerminal_Search")
+        
+        for _, target in ipairs(_G.BoothSniperSettings.Items) do
+            if target.ItemName then
+                -- Build args exactly like your example: {Class, JSON, nil, true}
+                local searchArgs = {}
+                searchArgs[1] = target.TerminalClass or target.Class:gsub("Items", "")
+                searchArgs[2] = '{"id":"' .. target.ItemName .. '"}'
+                searchArgs[4] = true
+                
+                local success, response = pcall(function()
+                    return terminalRemote:InvokeServer(unpack(searchArgs))
+                end)
+                
+                if success and response then
+                    local jobId, placeId = extractJobId(response)
+                    if jobId and jobId ~= game.JobId then
+                        print("[BoothSniper] Terminal found server! Teleporting to:", jobId)
+                        if statusLabel then statusLabel.Text = "🚀 Terminal Server Found! Teleporting..." end
+                        TeleportService:TeleportToPlaceInstance(placeId or game.PlaceId, jobId, LocalPlayer)
+                        task.wait(10) -- Wait for teleport to process
+                    end
+                end
+            end
+            task.wait(0.5) -- Don't spam the terminal remote
+        end
+    end
+
+    if _G.BoothSniperSettings.RandomJoin then
+        if statusLabel then statusLabel.Text = "🎲 Terminal empty. Random Hopping..." end
+        print("[BoothSniper] Falling back to Random Server Hop...")
+        
+        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
+        local success, result = pcall(function() return game:HttpGet(url) end)
+        
+        if success then
+            local data = HttpService:JSONDecode(result)
+            if data and data.data then
+                local validServers = {}
+                for _, server in ipairs(data.data) do
+                    if server.playing and server.maxPlayers and server.playing < server.maxPlayers and server.id ~= game.JobId then
+                        table.insert(validServers, server.id)
+                    end
+                end
+                
+                if #validServers > 0 then
+                    local randomJobId = validServers[math.random(1, #validServers)]
+                    print("[BoothSniper] Random server selected! Teleporting...")
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, randomJobId, LocalPlayer)
+                    task.wait(10)
+                end
+            end
+        end
+    end
+    
+    print("[BoothSniper] All hop methods failed. Retrying later.")
+    isHopping = false -- Reset so it can try again
+end
+
 
 -- ══════════════════════════════════════════
 -- UTILITY: Fetch Item Data from OFFICIAL API
@@ -50,34 +141,23 @@ local function fetchItemAssetID(class, itemName)
     return nil
 end
 
--- ══════════════════════════════════════════
--- UTILITY: Normalize Asset ID
--- ══════════════════════════════════════════
 local function getCleanID(assetText)
     if not assetText then return "" end
     return tostring(assetText):match("%d+") or ""
 end
 
--- ══════════════════════════════════════════
--- UTILITY: Ultra-Safe Price Parser
--- ══════════════════════════════════════════
 local function parsePrice(text)
     if type(text) ~= "string" then return 0 end
     text = text:lower():gsub(",", ""):gsub(" ", "")
-    
     local suffixes = { t = 1e12, b = 1e9, m = 1e6, k = 1e3 }
     for suffix, mult in pairs(suffixes) do
         local num = text:match("([%d%.]+)" .. suffix)
         if num then return tonumber(num) * mult end
     end
-    
     local rawNum = text:match("([%d%.]+)")
     return tonumber(rawNum) or 0
 end
 
--- ══════════════════════════════════════════
--- UTILITY: Bulletproof Gem Finder
--- ══════════════════════════════════════════
 local function getGems()
     local ls = LocalPlayer:FindFirstChild("leaderstats")
     if not ls then return 0 end
@@ -90,15 +170,12 @@ local function getGems()
 end
 
 -- ══════════════════════════════════════════
--- CORE: EXACT Remote Fire (From your logs)
+-- CORE: EXACT Remote Fire
 -- ══════════════════════════════════════════
 local function purchaseItem(ownerID, itemGUID, amount)
-    -- Build the arguments exactly as you pasted them
     local args = {
         tonumber(ownerID),
-        {
-            [tostring(itemGUID)] = tonumber(amount)
-        },
+        { [tostring(itemGUID)] = tonumber(amount) },
         {
             Caller = {
                 LineNumber = 527,
@@ -114,10 +191,7 @@ local function purchaseItem(ownerID, itemGUID, amount)
             }
         }
     }
-
     print(string.format("[BoothSniper] Firing Remote! Owner: %s | GUID: %s | Amount: %d", tostring(ownerID), tostring(itemGUID), tonumber(amount)))
-    
-    -- Execute exactly like your remote spy output
     game:GetService("ReplicatedStorage"):WaitForChild("Network"):WaitForChild("Booths_RequestPurchase"):InvokeServer(unpack(args))
 end
 
@@ -140,10 +214,15 @@ end
 -- CORE: Scan all booths logic
 -- ══════════════════════════════════════════
 local function scanAllBooths(statusLabel)
+    if isHopping then return end -- Don't scan if we are currently teleporting
+    
+    timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
+
     local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
     if not boothsFolder then return end
 
     local myGems = getGems()
+    local foundCount = 0
     local uiUpdated = false
 
     for _, booth in ipairs(boothsFolder:GetChildren()) do
@@ -158,15 +237,14 @@ local function scanAllBooths(statusLabel)
             for _, itemBox in ipairs(petScroll:GetChildren()) do
                 if itemBox:IsA("UIListLayout") or itemBox:IsA("UIPadding") then continue end
 
-                local iconLabel = itemBox:FindFirstChild("Holder")
-                    and itemBox.Holder:FindFirstChild("ItemSlot")
-                    and itemBox.Holder.ItemSlot:FindFirstChild("Icon")
+                local iconLabel = itemBox:FindFirstChild("Holder") and itemBox.Holder:FindFirstChild("ItemSlot") and itemBox.Holder.ItemSlot:FindFirstChild("Icon")
 
                 if iconLabel and iconLabel:IsA("ImageLabel") then
                     local cleanFoundID = getCleanID(iconLabel.Image)
 
                     for _, target in ipairs(_G.BoothSniperSettings.Items) do
                         if target.AssetID and cleanFoundID == getCleanID(target.AssetID) then
+                            foundCount += 1
                             
                             local costLabel = itemBox:FindFirstChild("Buy") and itemBox.Buy:FindFirstChild("Cost")
                                 
@@ -191,8 +269,10 @@ local function scanAllBooths(statusLabel)
                                             pcall(function() purchaseItem(ownerID, guid, buyAmount) end)
                                         end)
                                         
-                                        -- Wait to prevent spamming remotes
-                                        task.wait(0.5) 
+                                        -- Wait to let purchase process
+                                        task.wait(1) 
+                                        -- Reset time so it doesn't hop immediately after buying
+                                        timeInServer = 0 
                                     end
                                 end
                             end
@@ -203,8 +283,15 @@ local function scanAllBooths(statusLabel)
         end
     end
 
-    if isScanning and statusLabel and not uiUpdated then
-        statusLabel.Text = string.format("🔍 Scanning for %d targets...", #_G.BoothSniperSettings.Items)
+    -- Trigger Hop if no items are found after the HopDelay passes
+    if foundCount == 0 and _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
+        isHopping = true
+        task.spawn(function() doServerHop(statusLabel) end)
+        return
+    end
+
+    if isScanning and statusLabel and not uiUpdated and not isHopping then
+        statusLabel.Text = string.format("🔍 Scanning... (Hop in %ds)", math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer)))
         statusLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
     end
 end
@@ -296,6 +383,8 @@ if _G.BoothSniperSettings.ShowGUI then
             Status.Text = "Stopped."
         else
             isScanning = true
+            timeInServer = 0
+            isHopping = false
             ToggleBtn.Text = "⏸ Stop Scanner"
             ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
             
@@ -309,6 +398,8 @@ if _G.BoothSniperSettings.ShowGUI then
     end)
 else
     isScanning = true
+    timeInServer = 0
+    isHopping = false
     task.spawn(function()
         while isScanning do
             pcall(function() scanAllBooths(nil) end)
