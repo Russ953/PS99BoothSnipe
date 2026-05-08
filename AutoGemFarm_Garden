@@ -1,13 +1,30 @@
-print("v2.6")
+print("v2.7")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local CoreGui = game:GetService("CoreGui")
+
+-- ========================================================================
+-- BAG OPENER — fully standalone, always runs, no routing dependency
+-- ========================================================================
+task.spawn(function()
+    print("[BagOpener] Waiting for GiftBag_Open remote...")
+    local Network = ReplicatedStorage:WaitForChild("Network")
+    local bagRemote = Network:WaitForChild("GiftBag_Open")
+    print("[BagOpener] Hooked! Opening Seed Bags every 0.1s...")
+    while true do
+        task.wait(0.1)
+        pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
+    end
+end)
 
 -- ========================================================================
 -- ON-SCREEN DEBUGGER
 -- ========================================================================
-local CoreGui = game:GetService("CoreGui")
 for _, gui in ipairs(CoreGui:GetChildren()) do
     if gui.Name == "AIDebugger" or gui.Name == "AutoScannerGui" then gui:Destroy() end
 end
@@ -100,10 +117,6 @@ end
 
 _G.BoothSniperRunID = (_G.BoothSniperRunID or 0) + 1
 local currentRunID = _G.BoothSniperRunID
-
-local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ══════════════════════════════════════════
 -- MASTER ROUTER
@@ -204,7 +217,7 @@ if not isPlaza then
     end
 
 -- ========================================================================
--- MODE 2: BOOTH SNIPER (plaza only)
+-- MODE 2: BOOTH SNIPER
 -- ========================================================================
 else
     local isScanning = true
@@ -214,81 +227,34 @@ else
     local seenItems = {}
     local addLog = function(msg, color) end
 
-    -- ================================================================
-    -- BAG OPENER — runs only here, in plaza mode, after router
-    -- ================================================================
-    if _G.BoothSniperSettings.AutoOpenBags then
-        task.spawn(function()
-            local bagRemote = ReplicatedStorage:WaitForChild("Network", 10)
-                :WaitForChild("GiftBag_Open", 10)
-            if not bagRemote then
-                print("[BagOpener] ERROR: GiftBag_Open remote not found!")
-                return
-            end
-            print("[BagOpener] Hooked! Opening Seed Bags every 0.1s...")
-            while task.wait(0.1) do
-                if currentRunID ~= _G.BoothSniperRunID then
-                    print("[BagOpener] RunID changed, stopping.")
-                    return
-                end
-                pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
-            end
-        end)
-    end
-
-    -- ================================================================
-    -- Terminal search helper
-    -- ================================================================
     local function terminalSearch(termClass, itemName)
         local Network = ReplicatedStorage:FindFirstChild("Network")
         if not Network then return nil end
         local remote = Network:FindFirstChild("TradingTerminal_Search")
         if not remote then return nil end
-
-        local args = {
-            termClass,
-            '{"id":"' .. itemName .. '"}',
-            nil,
-            true
-        }
-        local ok, result = pcall(function()
-            return remote:InvokeServer(unpack(args))
-        end)
-        if not ok then
-            print("[Terminal] Error:", result)
-            return nil
-        end
-        if type(result) ~= "table" then return nil end
+        local args = { termClass, '{"id":"' .. itemName .. '"}', nil, true }
+        local ok, result = pcall(function() return remote:InvokeServer(unpack(args)) end)
+        if not ok or type(result) ~= "table" then return nil end
         if result.job_id then return result end
         return nil
     end
 
-    -- ================================================================
-    -- SERVER HOP
-    -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
 
         if _G.BoothSniperSettings.TerminalSearch then
             local candidates = {}
-
             for _, target in ipairs(_G.BoothSniperSettings.Items) do
                 local itemName = target.ItemName
                 local termClass = target.TerminalClass or "Misc"
                 if not itemName then continue end
-
                 updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
                 local entry = terminalSearch(termClass, itemName)
                 if entry and entry.job_id and entry.job_id ~= game.JobId then
-                    table.insert(candidates, {
-                        jobId    = entry.job_id,
-                        placeId  = entry.place_id or game.PlaceId,
-                        itemName = itemName
-                    })
+                    table.insert(candidates, { jobId = entry.job_id, placeId = entry.place_id or game.PlaceId, itemName = itemName })
                     print(string.format("[Terminal] Found server for '%s': job=%s", itemName, entry.job_id))
                 end
             end
-
             if #candidates > 0 then
                 local pick = candidates[1]
                 alertDebug(string.format("🗳️ Joining server with '%s'!", pick.itemName), 4)
@@ -303,7 +269,6 @@ else
             end
         end
 
-        -- Random fallback
         if _G.BoothSniperSettings.RandomJoin then
             updateDebug("🎲 Random Hopping...")
             local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
@@ -320,11 +285,7 @@ else
                         end
                     end
                     if #validServers > 0 then
-                        TeleportService:TeleportToPlaceInstance(
-                            game.PlaceId,
-                            validServers[math.random(1, #validServers)],
-                            LocalPlayer
-                        )
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, validServers[math.random(1, #validServers)], LocalPlayer)
                         task.wait(10)
                     end
                 end
@@ -373,24 +334,18 @@ else
             { [tostring(itemGUID)] = tonumber(amount) },
             {
                 Caller = {
-                    LineNumber = 527,
-                    ScriptClass = "ModuleScript",
-                    Variadic = false,
+                    LineNumber = 527, ScriptClass = "ModuleScript", Variadic = false,
                     Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157",
                     ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds",
                     FunctionName = "PromptPurchase2",
                     Handle = "function: 0xfa15618739cde075",
-                    ScriptType = "Instance",
-                    ParameterCount = 2,
+                    ScriptType = "Instance", ParameterCount = 2,
                     SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds"
                 }
             }
         }
         local success, response = pcall(function()
-            return ReplicatedStorage
-                :WaitForChild("Network")
-                :WaitForChild("Booths_RequestPurchase")
-                :InvokeServer(unpack(args))
+            return ReplicatedStorage:WaitForChild("Network"):WaitForChild("Booths_RequestPurchase"):InvokeServer(unpack(args))
         end)
         return success, response
     end
@@ -398,12 +353,9 @@ else
     local function scanAllBooths()
         if currentRunID ~= _G.BoothSniperRunID or isHopping then return end
         timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
-
         local myGems = getGems()
         updateDebug(string.format("🎯 Sniping | Gems: %d | Hop In: %ds",
-            myGems,
-            math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer))
-        ))
+            myGems, math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer))))
 
         if myGems < 100000 then
             isScanning = false
@@ -412,14 +364,12 @@ else
             return
         end
 
-        local boothsFolder = workspace:FindFirstChild("__THINGS")
-            and workspace.__THINGS:FindFirstChild("Booths")
+        local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
         if not boothsFolder then return end
 
         for _, booth in ipairs(boothsFolder:GetChildren()) do
             local ownerID = booth:GetAttribute("Owner")
             if not ownerID or ownerID == LocalPlayer.UserId then continue end
-
             local petScroll = booth:FindFirstChild("Pets")
                 and booth.Pets:FindFirstChild("BoothTop")
                 and booth.Pets.BoothTop:FindFirstChild("PetScroll")
@@ -430,45 +380,33 @@ else
                 local iconLabel = itemBox:FindFirstChild("Holder")
                     and itemBox.Holder:FindFirstChild("ItemSlot")
                     and itemBox.Holder.ItemSlot:FindFirstChild("Icon")
-
                 if iconLabel and iconLabel:IsA("ImageLabel") then
                     local cleanFoundID = getCleanID(iconLabel.Image)
                     local guid = itemBox.Name
-
                     for _, target in ipairs(_G.BoothSniperSettings.Items) do
                         if target.AssetID and cleanFoundID == getCleanID(target.AssetID) then
-                            local costLabel = itemBox:FindFirstChild("Buy")
-                                and itemBox.Buy:FindFirstChild("Cost")
+                            local costLabel = itemBox:FindFirstChild("Buy") and itemBox.Buy:FindFirstChild("Cost")
                             if costLabel and costLabel:IsA("TextLabel") then
                                 local pricePerItem = parsePrice(costLabel.Text)
                                 local maxPrice = target.MaxPrice or math.huge
                                 local itemNameDisplay = target.ItemName or target.AssetID
-
                                 if not seenItems[guid] then
                                     seenItems[guid] = true
                                     if pricePerItem <= maxPrice then
                                         local stockAvailable = tonumber(itemBox:GetAttribute("Quantity")) or 1
-                                        local maxAffordable = math.floor(myGems / pricePerItem)
-                                        local buyAmount = math.min(maxAffordable, stockAvailable)
-
+                                        local buyAmount = math.min(math.floor(myGems / pricePerItem), stockAvailable)
                                         if buyAmount > 0 then
-                                            alertDebug(string.format("⌛ FOUND %s | %s | Buying x%d...",
-                                                itemNameDisplay, costLabel.Text, buyAmount), 4)
-                                            addLog(string.format("⌛ Buying %dx %s @ %s",
-                                                buyAmount, itemNameDisplay, costLabel.Text),
-                                                Color3.fromRGB(200, 200, 100))
+                                            alertDebug(string.format("⌛ FOUND %s | %s | Buying x%d...", itemNameDisplay, costLabel.Text, buyAmount), 4)
+                                            addLog(string.format("⌛ Buying %dx %s @ %s", buyAmount, itemNameDisplay, costLabel.Text), Color3.fromRGB(200, 200, 100))
                                             task.spawn(function()
                                                 local startGems = getGems()
                                                 local success, response = purchaseItem(ownerID, guid, buyAmount)
                                                 task.wait(0.5)
                                                 if success and (response == true or getGems() < startGems) then
-                                                    alertDebug(string.format("✅ BOUGHT %s @ %s!",
-                                                        itemNameDisplay, costLabel.Text), 4)
-                                                    addLog(string.format("✅ Bought %s!", itemNameDisplay),
-                                                        Color3.fromRGB(100, 255, 130))
+                                                    alertDebug(string.format("✅ BOUGHT %s @ %s!", itemNameDisplay, costLabel.Text), 4)
+                                                    addLog(string.format("✅ Bought %s!", itemNameDisplay), Color3.fromRGB(100, 255, 130))
                                                 else
-                                                    alertDebug(string.format("❌ FAILED %s. Retrying...",
-                                                        itemNameDisplay), 3)
+                                                    alertDebug(string.format("❌ FAILED %s. Retrying...", itemNameDisplay), 3)
                                                     seenItems[guid] = nil
                                                 end
                                             end)
@@ -476,11 +414,8 @@ else
                                             timeInServer = 0
                                         end
                                     else
-                                        alertDebug(string.format("⚠️ SKIP %s | %s > Max %s",
-                                            itemNameDisplay, costLabel.Text, tostring(target.MaxPrice)), 2)
-                                        addLog(string.format("⚠️ Skipped %s: %s (over max)",
-                                            itemNameDisplay, costLabel.Text),
-                                            Color3.fromRGB(230, 150, 80))
+                                        alertDebug(string.format("⚠️ SKIP %s | %s > Max %s", itemNameDisplay, costLabel.Text, tostring(target.MaxPrice)), 2)
+                                        addLog(string.format("⚠️ Skipped %s: %s (over max)", itemNameDisplay, costLabel.Text), Color3.fromRGB(230, 150, 80))
                                     end
                                 end
                             end
@@ -490,14 +425,12 @@ else
             end
         end
 
-        if _G.BoothSniperSettings.AutoHop
-            and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
+        if _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
             isHopping = true
             task.spawn(doServerHop)
         end
     end
 
-    -- GUI log panel
     if _G.BoothSniperSettings.ShowGUI then
         local ScreenGui = Instance.new("ScreenGui", CoreGui)
         ScreenGui.Name = "AutoScannerGui"
@@ -524,14 +457,10 @@ else
             lbl.TextSize = 12
             lbl.Font = Enum.Font.Gotham
             lbl.TextXAlignment = Enum.TextXAlignment.Left
-            task.spawn(function()
-                task.wait(0.05)
-                LogFrame.CanvasPosition = Vector2.new(0, LogList.AbsoluteContentSize.Y)
-            end)
+            task.spawn(function() task.wait(0.05) LogFrame.CanvasPosition = Vector2.new(0, LogList.AbsoluteContentSize.Y) end)
         end
     end
 
-    -- SCAN LOOP
     task.spawn(function()
         while isScanning do
             if currentRunID ~= _G.BoothSniperRunID then break end
