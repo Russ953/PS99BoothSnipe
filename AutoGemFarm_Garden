@@ -1,4 +1,4 @@
-print("v2.0")
+print("v2.1")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -12,10 +12,10 @@ for _, gui in ipairs(CoreGui:GetChildren()) do
     if gui.Name == "AIDebugger" or gui.Name == "AutoScannerGui" then gui:Destroy() end
 end
 
-local debugFreezeUntil = 0  -- when > os.time(), the bar will not be overwritten
+local debugFreezeUntil = 0
 
-local function updateDebug(msg, freeze)
-    if os.time() < debugFreezeUntil then return end  -- blocked by a freeze
+local function updateDebug(msg)
+    if os.time() < debugFreezeUntil then return end
     local sg = CoreGui:FindFirstChild("AIDebugger")
     if not sg then
         sg = Instance.new("ScreenGui", CoreGui)
@@ -29,14 +29,14 @@ local function updateDebug(msg, freeze)
         tl.TextSize = 14
     end
     sg.Label.Text = msg
-    if freeze then debugFreezeUntil = os.time() + freeze end
     print(msg)
 end
 
 local function alertDebug(msg, freezeSecs)
-    -- Force-overrides freeze for important alerts
-    debugFreezeUntil = 0
-    updateDebug(msg, freezeSecs or 3)
+    debugFreezeUntil = os.time() + (freezeSecs or 3)
+    local sg = CoreGui:FindFirstChild("AIDebugger")
+    if sg and sg:FindFirstChild("Label") then sg.Label.Text = msg end
+    print(msg)
 end
 
 updateDebug("[AI] Waiting for Player Data to Load...")
@@ -96,22 +96,26 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ══════════════════════════════════════════
 -- GLOBAL BACKGROUND BAG OPENER
+-- FIX: keeps retrying until GiftBag_Open remote is found
 -- ══════════════════════════════════════════
 if _G.BoothSniperSettings.AutoOpenBags then
     task.spawn(function()
-        while task.wait(1) do
+        local bagRemote = nil
+        -- Keep searching until we find the remote
+        while not bagRemote do
             if currentRunID ~= _G.BoothSniperRunID then return end
             local network = ReplicatedStorage:FindFirstChild("Network")
             if network then
-                local bagRemote = network:FindFirstChild("GiftBag_Open")
-                if bagRemote then
-                    print("[AI] Bag Opener Hooked & Running!")
-                    while task.wait(0.01) do
-                        if currentRunID ~= _G.BoothSniperRunID then return end
-                        pcall(function() bagRemote:InvokeServer("SeedBag", 100) end)
-                    end
-                end
+                bagRemote = network:FindFirstChild("GiftBag_Open")
             end
+            if not bagRemote then task.wait(1) end
+        end
+        alertDebug("[AI] Bag Opener Hooked & Running!", 2)
+        print("[AI] Bag Opener Hooked & Running!")
+        -- Spam open all seed bags
+        while task.wait(0.05) do
+            if currentRunID ~= _G.BoothSniperRunID then return end
+            pcall(function() bagRemote:InvokeServer("SeedBag", 9999) end)
         end
     end)
 end
@@ -225,36 +229,68 @@ else
     local seenItems = {}
     local addLog = function(msg, color) end
 
-    local function extractJobId(tbl)
-        if type(tbl) == "string" and #tbl == 36 and tbl:match("%w+-%w+-%w+-%w+-%w+") then return tbl
-        elseif type(tbl) == "table" then
-            if tbl.jobId then return tbl.jobId, tbl.placeId end
-            if tbl.JobId then return tbl.JobId, tbl.PlaceId end
-            for _, v in pairs(tbl) do local j, p = extractJobId(v); if j then return j, p end end
-        end
-        return nil
-    end
-
+    -- ================================================================
+    -- SERVER HOP
+    -- TerminalSearch = true  -> uses PS99 trading server API first
+    -- RandomJoin = true      -> fallback random public server hop
+    -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
-        updateDebug("🎲 Random Hopping...")
-        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
-        local success, result = pcall(function() return game:HttpGet(url) end)
-        if success and result and result ~= "" then
-            local ok, data = pcall(function() return HttpService:JSONDecode(result) end)
-            if ok and data and data.data then
-                local validServers = {}
-                for _, server in ipairs(data.data) do
-                    if server.playing and server.maxPlayers and server.playing < server.maxPlayers and server.id ~= game.JobId then
-                        table.insert(validServers, server.id)
+
+        -- Try Terminal (PS99 trading plaza server list) first
+        if _G.BoothSniperSettings.TerminalSearch then
+            updateDebug("🗳️ Terminal Search: fetching active trading servers...")
+            local ok, result = pcall(function()
+                return game:HttpGet("https://ps99.biggamesapi.io/api/tradingServers?placeId=" .. game.PlaceId)
+            end)
+            if ok and result and result ~= "" then
+                local dok, data = pcall(function() return HttpService:JSONDecode(result) end)
+                if dok and data and data.data and #data.data > 0 then
+                    -- Pick a random one from the list that isn't our current server
+                    local valid = {}
+                    for _, srv in ipairs(data.data) do
+                        local jobId = srv.jobId or srv.id
+                        if jobId and jobId ~= game.JobId then
+                            table.insert(valid, jobId)
+                        end
+                    end
+                    if #valid > 0 then
+                        local picked = valid[math.random(1, #valid)]
+                        alertDebug("🗳️ Hopping to Trading Server...", 4)
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, picked, LocalPlayer)
+                        task.wait(10)
+                        isHopping = false
+                        timeInServer = 0
+                        return
                     end
                 end
-                if #validServers > 0 then
-                    TeleportService:TeleportToPlaceInstance(game.PlaceId, validServers[math.random(1, #validServers)], LocalPlayer)
-                    task.wait(10)
+            end
+            -- If terminal search returned nothing, fall through to random
+            updateDebug("⚠️ Terminal API empty, falling back to random hop...")
+        end
+
+        -- Random public server fallback
+        if _G.BoothSniperSettings.RandomJoin then
+            updateDebug("🎲 Random Hopping...")
+            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
+            local success, res = pcall(function() return game:HttpGet(url) end)
+            if success and res and res ~= "" then
+                local rok, rdata = pcall(function() return HttpService:JSONDecode(res) end)
+                if rok and rdata and rdata.data then
+                    local validServers = {}
+                    for _, server in ipairs(rdata.data) do
+                        if server.playing and server.maxPlayers and server.playing < server.maxPlayers and server.id ~= game.JobId then
+                            table.insert(validServers, server.id)
+                        end
+                    end
+                    if #validServers > 0 then
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, validServers[math.random(1, #validServers)], LocalPlayer)
+                        task.wait(10)
+                    end
                 end
             end
         end
+
         isHopping = false
         timeInServer = 0
     end
@@ -316,7 +352,6 @@ else
         timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
 
         local myGems = getGems()
-        -- Normal status (only shows if not frozen by a buy alert)
         updateDebug(string.format("🎯 Sniping | Gems: %d | Hop In: %ds", myGems, math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer))))
 
         if myGems < 100000 then
@@ -359,10 +394,8 @@ else
                                             local buyAmount = math.min(maxAffordable, stockAvailable)
 
                                             if buyAmount > 0 then
-                                                -- FREEZE the bar showing item + price for 4 seconds
-                                                alertDebug(string.format("⌛ FOUND %s | Price: %s | Buying x%d...", itemNameDisplay, costLabel.Text, buyAmount), 4)
+                                                alertDebug(string.format("⌛ FOUND %s | %s | Buying x%d...", itemNameDisplay, costLabel.Text, buyAmount), 4)
                                                 addLog(string.format("⌛ Buying %dx %s @ %s", buyAmount, itemNameDisplay, costLabel.Text), Color3.fromRGB(200, 200, 100))
-
                                                 task.spawn(function()
                                                     local startGems = getGems()
                                                     local success, response = purchaseItem(ownerID, guid, buyAmount)
@@ -371,7 +404,7 @@ else
                                                         alertDebug(string.format("✅ BOUGHT %s @ %s!", itemNameDisplay, costLabel.Text), 4)
                                                         addLog(string.format("✅ Bought %s!", itemNameDisplay), Color3.fromRGB(100, 255, 130))
                                                     else
-                                                        alertDebug(string.format("❌ FAILED to buy %s. Retrying...", itemNameDisplay), 3)
+                                                        alertDebug(string.format("❌ FAILED %s. Retrying...", itemNameDisplay), 3)
                                                         seenItems[guid] = nil
                                                     end
                                                 end)
@@ -379,8 +412,7 @@ else
                                                 timeInServer = 0
                                             end
                                         else
-                                            -- Item found but over max price - show in bar briefly
-                                            alertDebug(string.format("⚠️ SKIPPED %s | Price: %s > Max: %s", itemNameDisplay, costLabel.Text, tostring(target.MaxPrice)), 2)
+                                            alertDebug(string.format("⚠️ SKIP %s | %s > Max %s", itemNameDisplay, costLabel.Text, tostring(target.MaxPrice)), 2)
                                             addLog(string.format("⚠️ Skipped %s: %s (over max)", itemNameDisplay, costLabel.Text), Color3.fromRGB(230, 150, 80))
                                         end
                                     end
@@ -398,17 +430,15 @@ else
         end
     end
 
-    -- GUI (log panel)
+    -- GUI log panel
     if _G.BoothSniperSettings.ShowGUI then
         local ScreenGui = Instance.new("ScreenGui", CoreGui)
         ScreenGui.Name = "AutoScannerGui"
-
         local Frame = Instance.new("Frame", ScreenGui)
         Frame.Size = UDim2.new(0, 320, 0, 200)
         Frame.Position = UDim2.new(0.5, -160, 0.5, -100)
         Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
         Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 8)
-
         local LogFrame = Instance.new("ScrollingFrame", Frame)
         LogFrame.Size = UDim2.new(1, -20, 1, -20)
         LogFrame.Position = UDim2.new(0, 10, 0, 10)
@@ -416,10 +446,8 @@ else
         LogFrame.BorderSizePixel = 0
         LogFrame.ScrollBarThickness = 4
         Instance.new("UICorner", LogFrame).CornerRadius = UDim.new(0, 6)
-
         local LogList = Instance.new("UIListLayout", LogFrame)
         LogList.SortOrder = Enum.SortOrder.LayoutOrder
-
         addLog = function(msg, color)
             local lbl = Instance.new("TextLabel", LogFrame)
             lbl.Size = UDim2.new(1, -5, 0, 16)
@@ -433,7 +461,7 @@ else
         end
     end
 
-    -- SCAN LOOP - always runs regardless of GUI
+    -- SCAN LOOP - always runs
     task.spawn(function()
         while isScanning do
             if currentRunID ~= _G.BoothSniperRunID then break end
