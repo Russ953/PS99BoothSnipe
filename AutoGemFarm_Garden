@@ -1,6 +1,30 @@
 print("v1.3")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- ========================================================================
+-- CRITICAL FIX: WAIT FOR GEMS TO LOAD BEFORE DOING ANYTHING
+-- ========================================================================
+print("[AI] Waiting for player data to load...")
+local leaderstats = LocalPlayer:WaitForChild("leaderstats", 60)
+local diamondStat = nil
+
+if leaderstats then
+    -- Wait until the actual Diamond stat appears
+    while not diamondStat do
+        diamondStat = leaderstats:FindFirstChild("\240\159\146\142 Diamonds") or leaderstats:FindFirstChild("💎 Diamonds") or leaderstats:FindFirstChild("Diamonds")
+        if not diamondStat then task.wait(0.5) end
+    end
+    
+    -- Wait until the server actually sends the gem value (it usually starts as nil or empty string)
+    while tostring(diamondStat.Value) == "" or tostring(diamondStat.Value) == "nil" do
+        task.wait(0.5)
+    end
+end
+print("[AI] Player data loaded successfully!")
+
 -- ══════════════════════════════════════════
 -- MASTER SETTINGS & GHOST KILLER
 -- ══════════════════════════════════════════
@@ -25,9 +49,7 @@ local currentRunID = _G.BoothSniperRunID
 
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
-local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local LocalPlayer = Players.LocalPlayer
 
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
 local CoreGui = game:GetService("CoreGui")
@@ -36,7 +58,7 @@ for _, gui in ipairs(CoreGui:GetChildren()) do if gui.Name == "AutoScannerGui" t
 if PlayerGui then for _, gui in ipairs(PlayerGui:GetChildren()) do if gui.Name == "AutoScannerGui" then gui:Destroy() end end end
 
 -- ══════════════════════════════════════════
--- MATH & GEM UTILS (MOVED TO TOP TO FIX ROUTER)
+-- MATH & GEM UTILS 
 -- ══════════════════════════════════════════
 local function parsePrice(text)
     if type(text) ~= "string" then return tonumber(text) or 0 end
@@ -49,13 +71,8 @@ local function parsePrice(text)
 end
 
 local function getGems()
-    local ls = LocalPlayer:FindFirstChild("leaderstats")
-    if ls then
-        -- Exactly matches PS99 Diamond formats
-        local stat = ls:FindFirstChild("\240\159\146\142 Diamonds") or ls:FindFirstChild("💎 Diamonds") or ls:FindFirstChild("Diamonds")
-        if stat then
-            return parsePrice(tostring(stat.Value))
-        end
+    if diamondStat then
+        return parsePrice(tostring(diamondStat.Value))
     end
     return 0
 end
@@ -73,9 +90,7 @@ if _G.BoothSniperSettings.AutoOpenBags then
                     local network = ReplicatedStorage:FindFirstChild("Network")
                     if network then
                         local bagRemote = network:FindFirstChild("GiftBag_Open")
-                        if bagRemote then
-                            bagRemote:InvokeServer("Seed Bag", 100) 
-                        end
+                        if bagRemote then bagRemote:InvokeServer("Seed Bag", 100) end
                     end
                 end)
             end)
@@ -145,7 +160,6 @@ if PLACE_ID == MAIN_GAME_ID then
     local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
     local rootPart = character:WaitForChild("HumanoidRootPart")
     
-    -- Safely navigate to the portal
     local things = workspace:WaitForChild("__THINGS", 15)
     local enterTeleport = things and things:WaitForChild("Instances", 10):WaitForChild("FlowerGarden", 10):WaitForChild("Teleports", 10):WaitForChild("Enter", 10)
     
@@ -158,7 +172,6 @@ if PLACE_ID == MAIN_GAME_ID then
         end
     end
     
-    -- Wait for Instance to load & TP to plants
     local activeInstances = things:WaitForChild("__INSTANCE_CONTAINER", 10):WaitForChild("Active", 10)
     local flowerGarden = activeInstances:WaitForChild("FlowerGarden", 15)
     
@@ -171,7 +184,6 @@ if PLACE_ID == MAIN_GAME_ID then
         local invokeRemote = network:WaitForChild("Instancing_InvokeCustomFromClient")
         local fireRemote = network:WaitForChild("Instancing_FireCustomFromClient")
         
-        -- Plant/Grow/Claim Loop
         task.spawn(function()
             while isFarming do
                 for i = 1, 10 do
@@ -187,7 +199,6 @@ if PLACE_ID == MAIN_GAME_ID then
             end
         end)
         
-        -- The 10-Second Deadlock Tracker
         task.spawn(function()
             local timeStuck = 0
             local lastGemsCheck = getGems()
