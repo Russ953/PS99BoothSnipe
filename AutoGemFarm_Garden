@@ -1,4 +1,4 @@
-print("v1.9")
+print("v2.0")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -12,7 +12,10 @@ for _, gui in ipairs(CoreGui:GetChildren()) do
     if gui.Name == "AIDebugger" or gui.Name == "AutoScannerGui" then gui:Destroy() end
 end
 
-local function updateDebug(msg)
+local debugFreezeUntil = 0  -- when > os.time(), the bar will not be overwritten
+
+local function updateDebug(msg, freeze)
+    if os.time() < debugFreezeUntil then return end  -- blocked by a freeze
     local sg = CoreGui:FindFirstChild("AIDebugger")
     if not sg then
         sg = Instance.new("ScreenGui", CoreGui)
@@ -26,7 +29,14 @@ local function updateDebug(msg)
         tl.TextSize = 14
     end
     sg.Label.Text = msg
+    if freeze then debugFreezeUntil = os.time() + freeze end
     print(msg)
+end
+
+local function alertDebug(msg, freezeSecs)
+    -- Force-overrides freeze for important alerts
+    debugFreezeUntil = 0
+    updateDebug(msg, freezeSecs or 3)
 end
 
 updateDebug("[AI] Waiting for Player Data to Load...")
@@ -306,11 +316,12 @@ else
         timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
 
         local myGems = getGems()
+        -- Normal status (only shows if not frozen by a buy alert)
         updateDebug(string.format("🎯 Sniping | Gems: %d | Hop In: %ds", myGems, math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer))))
 
         if myGems < 100000 then
             isScanning = false
-            updateDebug("💸 Gems drained! TPing to Farm...")
+            alertDebug("💸 Gems drained! TPing to Farm...", 5)
             TeleportService:Teleport(8737899170, LocalPlayer)
             return
         end
@@ -348,22 +359,29 @@ else
                                             local buyAmount = math.min(maxAffordable, stockAvailable)
 
                                             if buyAmount > 0 then
-                                                addLog(string.format("⌛ Buying %dx %s...", buyAmount, itemNameDisplay), Color3.fromRGB(200, 200, 100))
-                                                updateDebug(string.format("⌛ Buying %dx %s...", buyAmount, itemNameDisplay))
+                                                -- FREEZE the bar showing item + price for 4 seconds
+                                                alertDebug(string.format("⌛ FOUND %s | Price: %s | Buying x%d...", itemNameDisplay, costLabel.Text, buyAmount), 4)
+                                                addLog(string.format("⌛ Buying %dx %s @ %s", buyAmount, itemNameDisplay, costLabel.Text), Color3.fromRGB(200, 200, 100))
+
                                                 task.spawn(function()
                                                     local startGems = getGems()
                                                     local success, response = purchaseItem(ownerID, guid, buyAmount)
                                                     task.wait(0.5)
                                                     if success and (response == true or getGems() < startGems) then
+                                                        alertDebug(string.format("✅ BOUGHT %s @ %s!", itemNameDisplay, costLabel.Text), 4)
                                                         addLog(string.format("✅ Bought %s!", itemNameDisplay), Color3.fromRGB(100, 255, 130))
-                                                        updateDebug(string.format("✅ Bought %s!", itemNameDisplay))
                                                     else
+                                                        alertDebug(string.format("❌ FAILED to buy %s. Retrying...", itemNameDisplay), 3)
                                                         seenItems[guid] = nil
                                                     end
                                                 end)
                                                 task.wait(1)
                                                 timeInServer = 0
                                             end
+                                        else
+                                            -- Item found but over max price - show in bar briefly
+                                            alertDebug(string.format("⚠️ SKIPPED %s | Price: %s > Max: %s", itemNameDisplay, costLabel.Text, tostring(target.MaxPrice)), 2)
+                                            addLog(string.format("⚠️ Skipped %s: %s (over max)", itemNameDisplay, costLabel.Text), Color3.fromRGB(230, 150, 80))
                                         end
                                     end
                                 end
@@ -380,7 +398,7 @@ else
         end
     end
 
-    -- GUI (optional, log only)
+    -- GUI (log panel)
     if _G.BoothSniperSettings.ShowGUI then
         local ScreenGui = Instance.new("ScreenGui", CoreGui)
         ScreenGui.Name = "AutoScannerGui"
@@ -415,7 +433,7 @@ else
         end
     end
 
-    -- !! SCAN LOOP IS NOW OUTSIDE GUI BLOCK - ALWAYS RUNS !!
+    -- SCAN LOOP - always runs regardless of GUI
     task.spawn(function()
         while isScanning do
             if currentRunID ~= _G.BoothSniperRunID then break end
