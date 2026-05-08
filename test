@@ -28,6 +28,37 @@ local timeInServer = 0
 local cachedAssetIDs = {}
 
 -- ══════════════════════════════════════════
+-- QUEUE ON TELEPORT (Auto-Execute in new server)
+-- ══════════════════════════════════════════
+local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or getgenv().queue_on_teleport
+if queue_on_teleport then
+    local TeleportCheck = false
+    LocalPlayer.OnTeleport:Connect(function(State)
+        if not TeleportCheck then
+            TeleportCheck = true
+            print("[BoothSniper] Teleport detected! Queuing script for next server...")
+            
+            -- Convert current settings to JSON so they survive the teleport
+            local settingsJSON = HttpService:JSONEncode(_G.BoothSniperSettings)
+            
+            -- Create the payload script to run in the next server
+            local autoRunScript = string.format([[
+                task.wait(2) -- Wait for game to load slightly
+                local HttpService = game:GetService("HttpService")
+                if not _G.BoothSniperSettings then
+                    _G.BoothSniperSettings = HttpService:JSONDecode('%s')
+                end
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/Russ953/PS99BoothSnipe/main/test"))()
+            ]], settingsJSON)
+            
+            pcall(function()
+                queue_on_teleport(autoRunScript)
+            end)
+        end
+    end)
+end
+
+-- ══════════════════════════════════════════
 -- AUTO-HOP: Extract JobId from Terminal Response
 -- ══════════════════════════════════════════
 local function extractJobId(tbl)
@@ -56,7 +87,6 @@ local function doServerHop(statusLabel)
         
         for _, target in ipairs(_G.BoothSniperSettings.Items) do
             if target.ItemName then
-                -- Build args exactly like your example: {Class, JSON, nil, true}
                 local searchArgs = {}
                 searchArgs[1] = target.TerminalClass or target.Class:gsub("Items", "")
                 searchArgs[2] = '{"id":"' .. target.ItemName .. '"}'
@@ -72,11 +102,11 @@ local function doServerHop(statusLabel)
                         print("[BoothSniper] Terminal found server! Teleporting to:", jobId)
                         if statusLabel then statusLabel.Text = "🚀 Terminal Server Found! Teleporting..." end
                         TeleportService:TeleportToPlaceInstance(placeId or game.PlaceId, jobId, LocalPlayer)
-                        task.wait(10) -- Wait for teleport to process
+                        task.wait(10)
                     end
                 end
             end
-            task.wait(0.5) -- Don't spam the terminal remote
+            task.wait(0.5)
         end
     end
 
@@ -108,12 +138,12 @@ local function doServerHop(statusLabel)
     end
     
     print("[BoothSniper] All hop methods failed. Retrying later.")
-    isHopping = false -- Reset so it can try again
+    isHopping = false
 end
 
 
 -- ══════════════════════════════════════════
--- UTILITY: Fetch Item Data from OFFICIAL API
+-- UTILITY: Fetch API & Parse Data
 -- ══════════════════════════════════════════
 local function fetchItemAssetID(class, itemName)
     local cacheKey = class .. "_" .. itemName
@@ -214,8 +244,7 @@ end
 -- CORE: Scan all booths logic
 -- ══════════════════════════════════════════
 local function scanAllBooths(statusLabel)
-    if isHopping then return end -- Don't scan if we are currently teleporting
-    
+    if isHopping then return end 
     timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
 
     local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
@@ -269,9 +298,7 @@ local function scanAllBooths(statusLabel)
                                             pcall(function() purchaseItem(ownerID, guid, buyAmount) end)
                                         end)
                                         
-                                        -- Wait to let purchase process
                                         task.wait(1) 
-                                        -- Reset time so it doesn't hop immediately after buying
                                         timeInServer = 0 
                                     end
                                 end
@@ -283,7 +310,6 @@ local function scanAllBooths(statusLabel)
         end
     end
 
-    -- Trigger Hop if no items are found after the HopDelay passes
     if foundCount == 0 and _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
         isHopping = true
         task.spawn(function() doServerHop(statusLabel) end)
@@ -396,6 +422,19 @@ if _G.BoothSniperSettings.ShowGUI then
             end)
         end
     end)
+    
+    -- If auto-executed in a new server, start scanning instantly
+    if _G.BoothSniperSettings.AutoHop then
+        ToggleBtn.Text = "⏸ Stop Scanner"
+        ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+        isScanning = true
+        task.spawn(function()
+            while isScanning do
+                pcall(function() scanAllBooths(Status) end)
+                task.wait(_G.BoothSniperSettings.ScanDelay)
+            end
+        end)
+    end
 else
     isScanning = true
     timeInServer = 0
