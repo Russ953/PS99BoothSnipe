@@ -1,4 +1,4 @@
-print("v2.3")
+print("v2.4")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -235,10 +235,30 @@ else
     local addLog = function(msg, color) end
 
     -- ================================================================
+    -- Validate a job_id is not full using Roblox public server list
+    -- Returns true if the server has space
+    -- ================================================================
+    local function isServerJoinable(placeId, targetJobId)
+        local ok, res = pcall(function()
+            return game:HttpGet("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Desc&limit=100")
+        end)
+        if not ok or not res or res == "" then return true end -- assume joinable if API fails
+        local dok, data = pcall(function() return HttpService:JSONDecode(res) end)
+        if not dok or not data or not data.data then return true end
+        for _, server in ipairs(data.data) do
+            if server.id == targetJobId then
+                return server.playing ~= nil and server.maxPlayers ~= nil and server.playing < server.maxPlayers
+            end
+        end
+        -- Not found in public list = private or expired, skip it
+        return false
+    end
+
+    -- ================================================================
     -- SERVER HOP
-    -- Uses TradingTerminal_Search in-game remote with correct arg layout:
-    -- InvokeServer(TerminalClass, '{"id":"ItemName"}', [3]=nil, [4]=true)
-    -- The [4]=true MUST be at explicit index 4, not passed as arg 3!
+    -- TerminalSearch: uses in-game TradingTerminal_Search, validates
+    -- each result for joinability before teleporting.
+    -- RandomJoin: fallback random public server.
     -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
@@ -248,60 +268,60 @@ else
                 ReplicatedStorage.Network:FindFirstChild("TradingTerminal_Search")
 
             if terminalRemote then
-                local foundJobId = nil
-                local foundPlaceId = nil
+                -- Collect ALL results from ALL items first
+                local allCandidates = {}
 
                 for _, target in ipairs(_G.BoothSniperSettings.Items) do
-                    if foundJobId then break end
                     local itemName = target.ItemName
                     local termClass = target.TerminalClass or "Misc"
                     if not itemName then continue end
 
-                    -- CRITICAL: arg layout must be [1]=class, [2]=jsonString, [3]=nil, [4]=true
-                    -- unpack() drops nil so we must build the table with explicit index 4
+                    updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
+
                     local searchArgs = {
                         termClass,
                         '{"id":"' .. itemName .. '"}',
                         [4] = true
                     }
-
-                    updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
-                    print("[Terminal] Sending:", termClass, searchArgs[2], "[4]=", searchArgs[4])
-
                     local ok, results = pcall(function()
                         return terminalRemote:InvokeServer(unpack(searchArgs, 1, 4))
                     end)
 
-                    print("[Terminal] ok=", ok, "type=", type(results))
                     if ok and type(results) == "table" then
-                        print("[Terminal] result count=", #results)
-                        for i, entry in ipairs(results) do
-                            print("[Terminal] entry", i, "job_id=", entry.job_id, "place_id=", entry.place_id)
+                        for _, entry in ipairs(results) do
                             local jobId = entry.job_id
-                            local placeId = entry.place_id
+                            local placeId = entry.place_id or game.PlaceId
                             if jobId and jobId ~= game.JobId then
-                                foundJobId = jobId
-                                foundPlaceId = placeId or game.PlaceId
-                                break
+                                table.insert(allCandidates, { jobId = jobId, placeId = placeId, itemName = itemName })
                             end
                         end
-                    else
-                        print("[Terminal] Failed or no table. results=", tostring(results))
                     end
                 end
 
-                if foundJobId then
-                    alertDebug("🗳️ Hopping to Terminal Server...", 4)
-                    TeleportService:TeleportToPlaceInstance(foundPlaceId, foundJobId, LocalPlayer)
-                    task.wait(10)
-                    isHopping = false
-                    timeInServer = 0
-                    return
+                -- Now validate each candidate and pick the first joinable one
+                if #allCandidates > 0 then
+                    updateDebug(string.format("🗳️ Validating %d candidate server(s)...", #allCandidates))
+                    for _, candidate in ipairs(allCandidates) do
+                        updateDebug(string.format("🗳️ Checking server for %s...", candidate.itemName))
+                        if isServerJoinable(candidate.placeId, candidate.jobId) then
+                            alertDebug(string.format("🗳️ Joining server with %s!", candidate.itemName), 4)
+                            addLog(string.format("🗳️ Hopping to server with %s", candidate.itemName), Color3.fromRGB(100, 200, 255))
+                            TeleportService:TeleportToPlaceInstance(candidate.placeId, candidate.jobId, LocalPlayer)
+                            task.wait(10)
+                            isHopping = false
+                            timeInServer = 0
+                            return
+                        else
+                            print(string.format("[Terminal] Server for %s is full or gone, skipping.", candidate.itemName))
+                            addLog(string.format("⚠️ Server full/gone for %s, skipping", candidate.itemName), Color3.fromRGB(230, 150, 80))
+                        end
+                    end
+                    updateDebug("⚠️ All terminal servers full/gone, random hopping...")
                 else
-                    updateDebug("⚠️ Terminal: no results, falling back to random hop...")
+                    updateDebug("⚠️ Terminal: no results, random hopping...")
                 end
             else
-                updateDebug("⚠️ Terminal remote not found, falling back...")
+                updateDebug("⚠️ Terminal remote not found, random hopping...")
             end
         end
 
@@ -309,8 +329,8 @@ else
         if _G.BoothSniperSettings.RandomJoin then
             updateDebug("🎲 Random Hopping...")
             local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
-            local success, res = pcall(function() return game:HttpGet(url) end)
-            if success and res and res ~= "" then
+            local ok, res = pcall(function() return game:HttpGet(url) end)
+            if ok and res and res ~= "" then
                 local rok, rdata = pcall(function() return HttpService:JSONDecode(res) end)
                 if rok and rdata and rdata.data then
                     local validServers = {}
