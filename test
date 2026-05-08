@@ -16,11 +16,23 @@ end
 if _G.BoothSniperSettings.ShowGUI == nil then _G.BoothSniperSettings.ShowGUI = true end
 if _G.BoothSniperSettings.AutoHop == nil then _G.BoothSniperSettings.AutoHop = false end
 
+-- ══════════════════════════════════════════
+-- GHOST KILLER: Prevent Multiple Executions
+-- ══════════════════════════════════════════
+_G.BoothSniperRunID = (_G.BoothSniperRunID or 0) + 1
+local currentRunID = _G.BoothSniperRunID
+
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
+
+-- Destroy any existing GUIs from previous runs
+local oldGuiCore = game:GetService("CoreGui"):FindFirstChild("AutoScannerGui")
+local oldGuiPlayer = LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("AutoScannerGui")
+if oldGuiCore then oldGuiCore:Destroy() end
+if oldGuiPlayer then oldGuiPlayer:Destroy() end
 
 local isScanning = false
 local isHopping = false
@@ -32,18 +44,20 @@ local cachedAssetIDs = {}
 -- ══════════════════════════════════════════
 local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or getgenv().queue_on_teleport
 if queue_on_teleport then
+    -- Disconnect old teleport events so they don't stack
+    if _G.BoothSniperTeleportConn then
+        _G.BoothSniperTeleportConn:Disconnect()
+    end
+    
     local TeleportCheck = false
-    LocalPlayer.OnTeleport:Connect(function(State)
+    _G.BoothSniperTeleportConn = LocalPlayer.OnTeleport:Connect(function(State)
         if not TeleportCheck then
             TeleportCheck = true
             print("[BoothSniper] Teleport detected! Queuing script for next server...")
             
-            -- Convert current settings to JSON so they survive the teleport
             local settingsJSON = HttpService:JSONEncode(_G.BoothSniperSettings)
-            
-            -- Create the payload script to run in the next server
             local autoRunScript = string.format([[
-                task.wait(2) -- Wait for game to load slightly
+                task.wait(3) 
                 local HttpService = game:GetService("HttpService")
                 if not _G.BoothSniperSettings then
                     _G.BoothSniperSettings = HttpService:JSONDecode('%s')
@@ -51,9 +65,7 @@ if queue_on_teleport then
                 loadstring(game:HttpGet("https://raw.githubusercontent.com/Russ953/PS99BoothSnipe/main/test"))()
             ]], settingsJSON)
             
-            pcall(function()
-                queue_on_teleport(autoRunScript)
-            end)
+            pcall(function() queue_on_teleport(autoRunScript) end)
         end
     end)
 end
@@ -79,11 +91,12 @@ end
 -- AUTO-HOP: Core Hop Logic
 -- ══════════════════════════════════════════
 local function doServerHop(statusLabel)
+    if currentRunID ~= _G.BoothSniperRunID then return end -- Kill ghost
+
     if _G.BoothSniperSettings.TerminalSearch then
         if statusLabel then statusLabel.Text = "📡 Searching Trading Terminal..." end
         print("[BoothSniper] Initiating Terminal Search...")
         
-        -- Added a 5-second timeout so it never yields infinitely!
         local network = ReplicatedStorage:WaitForChild("Network", 5)
         local terminalRemote = network and network:WaitForChild("TradingTerminal_Search", 5)
         
@@ -95,7 +108,6 @@ local function doServerHop(statusLabel)
                     searchArgs[2] = '{"id":"' .. target.ItemName .. '"}'
                     searchArgs[4] = true
                     
-                    print("[BoothSniper] Searching Terminal for:", target.ItemName)
                     local success, response = pcall(function()
                         return terminalRemote:InvokeServer(unpack(searchArgs))
                     end)
@@ -103,7 +115,7 @@ local function doServerHop(statusLabel)
                     if success and response then
                         local jobId, placeId = extractJobId(response)
                         if jobId and jobId ~= game.JobId then
-                            print("[BoothSniper] Terminal found server! Teleporting to:", jobId)
+                            print("[BoothSniper] Terminal found server! Teleporting...")
                             if statusLabel then statusLabel.Text = "🚀 Terminal Server Found! Teleporting..." end
                             TeleportService:TeleportToPlaceInstance(placeId or game.PlaceId, jobId, LocalPlayer)
                             task.wait(10)
@@ -112,8 +124,6 @@ local function doServerHop(statusLabel)
                 end
                 task.wait(0.5)
             end
-        else
-            warn("[BoothSniper] TradingTerminal_Search remote not found! Skipping to Random Hop.")
         end
     end
 
@@ -136,7 +146,6 @@ local function doServerHop(statusLabel)
                 
                 if #validServers > 0 then
                     local randomJobId = validServers[math.random(1, #validServers)]
-                    print("[BoothSniper] Random server selected! Teleporting...")
                     TeleportService:TeleportToPlaceInstance(game.PlaceId, randomJobId, LocalPlayer)
                     task.wait(10)
                 end
@@ -144,11 +153,9 @@ local function doServerHop(statusLabel)
         end
     end
     
-    print("[BoothSniper] All hop methods failed. Retrying later.")
     isHopping = false
-    timeInServer = 0 -- Reset timer so it scans again before trying to hop
+    timeInServer = 0 
 end
-
 
 -- ══════════════════════════════════════════
 -- UTILITY: Fetch API & Parse Data
@@ -179,10 +186,7 @@ local function fetchItemAssetID(class, itemName)
     return nil
 end
 
-local function getCleanID(assetText)
-    if not assetText then return "" end
-    return tostring(assetText):match("%d+") or ""
-end
+local function getCleanID(assetText) return assetText and tostring(assetText):match("%d+") or "" end
 
 local function parsePrice(text)
     if type(text) ~= "string" then return 0 end
@@ -192,17 +196,14 @@ local function parsePrice(text)
         local num = text:match("([%d%.]+)" .. suffix)
         if num then return tonumber(num) * mult end
     end
-    local rawNum = text:match("([%d%.]+)")
-    return tonumber(rawNum) or 0
+    return tonumber(text:match("([%d%.]+)")) or 0
 end
 
 local function getGems()
     local ls = LocalPlayer:FindFirstChild("leaderstats")
     if not ls then return 0 end
     for _, stat in ipairs(ls:GetChildren()) do
-        if stat.Name:match("Diamonds") or stat.Name:match("💎") then
-            return tonumber(stat.Value) or 0
-        end
+        if stat.Name:match("Diamonds") or stat.Name:match("💎") then return tonumber(stat.Value) or 0 end
     end
     return 0
 end
@@ -214,44 +215,16 @@ local function purchaseItem(ownerID, itemGUID, amount)
     local args = {
         tonumber(ownerID),
         { [tostring(itemGUID)] = tonumber(amount) },
-        {
-            Caller = {
-                LineNumber = 527,
-                ScriptClass = "ModuleScript",
-                Variadic = false,
-                Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157",
-                ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds",
-                FunctionName = "PromptPurchase2",
-                Handle = "function: 0xfa15618739cde075",
-                ScriptType = "Instance",
-                ParameterCount = 2,
-                SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds"
-            }
-        }
+        { Caller = { LineNumber = 527, ScriptClass = "ModuleScript", Variadic = false, Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157", ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds", FunctionName = "PromptPurchase2", Handle = "function: 0xfa15618739cde075", ScriptType = "Instance", ParameterCount = 2, SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds" } }
     }
-    print(string.format("[BoothSniper] Firing Remote! Owner: %s | GUID: %s | Amount: %d", tostring(ownerID), tostring(itemGUID), tonumber(amount)))
     game:GetService("ReplicatedStorage"):WaitForChild("Network"):WaitForChild("Booths_RequestPurchase"):InvokeServer(unpack(args))
-end
-
--- ══════════════════════════════════════════
--- PRE-LOAD: Resolve APIs before scanning
--- ══════════════════════════════════════════
-local function preLoadTargets()
-    for _, target in ipairs(_G.BoothSniperSettings.Items) do
-        if target.Class and target.ItemName and not target.AssetID then
-            local fetchedID = fetchItemAssetID(target.Class, target.ItemName)
-            if fetchedID then
-                target.AssetID = fetchedID
-                print("[BoothSniper] API loaded:", target.ItemName, "->", fetchedID)
-            end
-        end
-    end
 end
 
 -- ══════════════════════════════════════════
 -- CORE: Scan all booths logic
 -- ══════════════════════════════════════════
 local function scanAllBooths(statusLabel)
+    if currentRunID ~= _G.BoothSniperRunID then return end -- Kill ghost
     if isHopping then return end 
     timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
 
@@ -265,24 +238,17 @@ local function scanAllBooths(statusLabel)
         local ownerID = booth:GetAttribute("Owner")
         if not ownerID or ownerID == LocalPlayer.UserId then continue end 
 
-        local petScroll = booth:FindFirstChild("Pets")
-            and booth.Pets:FindFirstChild("BoothTop")
-            and booth.Pets.BoothTop:FindFirstChild("PetScroll")
-
+        local petScroll = booth:FindFirstChild("Pets") and booth.Pets:FindFirstChild("BoothTop") and booth.Pets.BoothTop:FindFirstChild("PetScroll")
         if petScroll then
             for _, itemBox in ipairs(petScroll:GetChildren()) do
                 if itemBox:IsA("UIListLayout") or itemBox:IsA("UIPadding") then continue end
-
                 local iconLabel = itemBox:FindFirstChild("Holder") and itemBox.Holder:FindFirstChild("ItemSlot") and itemBox.Holder.ItemSlot:FindFirstChild("Icon")
 
                 if iconLabel and iconLabel:IsA("ImageLabel") then
                     local cleanFoundID = getCleanID(iconLabel.Image)
-
                     for _, target in ipairs(_G.BoothSniperSettings.Items) do
                         if target.AssetID and cleanFoundID == getCleanID(target.AssetID) then
-                            
                             local costLabel = itemBox:FindFirstChild("Buy") and itemBox.Buy:FindFirstChild("Cost")
-                                
                             if costLabel and costLabel:IsA("TextLabel") then
                                 local pricePerItem = parsePrice(costLabel.Text)
                                 local maxPrice = target.MaxPrice or math.huge
@@ -298,14 +264,9 @@ local function scanAllBooths(statusLabel)
                                             statusLabel.TextColor3 = Color3.fromRGB(100, 255, 130)
                                             uiUpdated = true
                                         end
-                                        
                                         local guid = itemBox.Name
-                                        task.spawn(function() 
-                                            pcall(function() purchaseItem(ownerID, guid, buyAmount) end)
-                                        end)
-                                        
+                                        task.spawn(function() pcall(function() purchaseItem(ownerID, guid, buyAmount) end) end)
                                         task.wait(1) 
-                                        -- Reset hop timer because we bought something!
                                         timeInServer = 0 
                                     end
                                 end
@@ -317,7 +278,6 @@ local function scanAllBooths(statusLabel)
         end
     end
 
-    -- Trigger Hop if the timer runs out (ignores overpriced items now!)
     if _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
         isHopping = true
         task.spawn(function() doServerHop(statusLabel) end)
@@ -327,6 +287,14 @@ local function scanAllBooths(statusLabel)
     if isScanning and statusLabel and not uiUpdated and not isHopping then
         statusLabel.Text = string.format("🔍 Scanning... (Hop in %ds)", math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer)))
         statusLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
+    end
+end
+
+-- Preload APIs
+for _, target in ipairs(_G.BoothSniperSettings.Items) do
+    if target.Class and target.ItemName and not target.AssetID then
+        local fetchedID = fetchItemAssetID(target.Class, target.ItemName)
+        if fetchedID then target.AssetID = fetchedID end
     end
 end
 
@@ -343,14 +311,8 @@ if _G.BoothSniperSettings.ShowGUI then
     Frame.Size = UDim2.new(0, 300, 0, 150)
     Frame.Position = UDim2.new(0.5, -150, 0.5, -75)
     Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
-    Frame.BorderSizePixel = 0
-    Frame.Active = true
-    Frame.Draggable = true
     Frame.Parent = ScreenGui
-
-    local UICorner = Instance.new("UICorner")
-    UICorner.CornerRadius = UDim.new(0, 8)
-    UICorner.Parent = Frame
+    Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 8)
 
     local TitleBar = Instance.new("Frame")
     TitleBar.Size = UDim2.new(1, 0, 0, 30)
@@ -397,10 +359,7 @@ if _G.BoothSniperSettings.ShowGUI then
     ToggleBtn.Font = Enum.Font.GothamBold
     ToggleBtn.TextSize = 13
     ToggleBtn.Parent = Frame
-    
-    local ToggleCorner = Instance.new("UICorner")
-    ToggleCorner.CornerRadius = UDim.new(0, 6)
-    ToggleCorner.Parent = ToggleBtn
+    Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 6)
 
     CloseBtn.MouseButton1Click:Connect(function()
         isScanning = false
@@ -422,6 +381,7 @@ if _G.BoothSniperSettings.ShowGUI then
             
             task.spawn(function()
                 while isScanning do
+                    if currentRunID ~= _G.BoothSniperRunID then break end
                     pcall(function() scanAllBooths(Status) end)
                     task.wait(_G.BoothSniperSettings.ScanDelay)
                 end
@@ -429,13 +389,13 @@ if _G.BoothSniperSettings.ShowGUI then
         end
     end)
     
-    -- If auto-executed in a new server, start scanning instantly
     if _G.BoothSniperSettings.AutoHop then
         ToggleBtn.Text = "⏸ Stop Scanner"
         ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
         isScanning = true
         task.spawn(function()
             while isScanning do
+                if currentRunID ~= _G.BoothSniperRunID then break end
                 pcall(function() scanAllBooths(Status) end)
                 task.wait(_G.BoothSniperSettings.ScanDelay)
             end
@@ -443,10 +403,9 @@ if _G.BoothSniperSettings.ShowGUI then
     end
 else
     isScanning = true
-    timeInServer = 0
-    isHopping = false
     task.spawn(function()
         while isScanning do
+            if currentRunID ~= _G.BoothSniperRunID then break end
             pcall(function() scanAllBooths(nil) end)
             task.wait(_G.BoothSniperSettings.ScanDelay)
         end
