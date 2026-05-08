@@ -1,4 +1,4 @@
-print("v2.1")
+print("v2.2")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -35,7 +35,18 @@ end
 local function alertDebug(msg, freezeSecs)
     debugFreezeUntil = os.time() + (freezeSecs or 3)
     local sg = CoreGui:FindFirstChild("AIDebugger")
-    if sg and sg:FindFirstChild("Label") then sg.Label.Text = msg end
+    if not sg then
+        sg = Instance.new("ScreenGui", CoreGui)
+        sg.Name = "AIDebugger"
+        local tl = Instance.new("TextLabel", sg)
+        tl.Name = "Label"
+        tl.Size = UDim2.new(1, 0, 0, 25)
+        tl.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
+        tl.TextColor3 = Color3.fromRGB(100, 255, 150)
+        tl.Font = Enum.Font.GothamBold
+        tl.TextSize = 14
+    end
+    sg.Label.Text = msg
     print(msg)
 end
 
@@ -96,26 +107,21 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ══════════════════════════════════════════
 -- GLOBAL BACKGROUND BAG OPENER
--- FIX: keeps retrying until GiftBag_Open remote is found
+-- FIX: correct arg is "Seed Bag" (with space), max 100 per call
 -- ══════════════════════════════════════════
 if _G.BoothSniperSettings.AutoOpenBags then
     task.spawn(function()
         local bagRemote = nil
-        -- Keep searching until we find the remote
         while not bagRemote do
             if currentRunID ~= _G.BoothSniperRunID then return end
             local network = ReplicatedStorage:FindFirstChild("Network")
-            if network then
-                bagRemote = network:FindFirstChild("GiftBag_Open")
-            end
+            if network then bagRemote = network:FindFirstChild("GiftBag_Open") end
             if not bagRemote then task.wait(1) end
         end
         alertDebug("[AI] Bag Opener Hooked & Running!", 2)
-        print("[AI] Bag Opener Hooked & Running!")
-        -- Spam open all seed bags
-        while task.wait(0.05) do
+        while task.wait(0.1) do
             if currentRunID ~= _G.BoothSniperRunID then return end
-            pcall(function() bagRemote:InvokeServer("SeedBag", 9999) end)
+            pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
         end
     end)
 end
@@ -231,42 +237,60 @@ else
 
     -- ================================================================
     -- SERVER HOP
-    -- TerminalSearch = true  -> uses PS99 trading server API first
-    -- RandomJoin = true      -> fallback random public server hop
+    -- TerminalSearch = true -> uses in-game TradingTerminal_Search remote
+    -- RandomJoin = true     -> fallback: random public server
     -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
 
-        -- Try Terminal (PS99 trading plaza server list) first
         if _G.BoothSniperSettings.TerminalSearch then
-            updateDebug("🗳️ Terminal Search: fetching active trading servers...")
-            local ok, result = pcall(function()
-                return game:HttpGet("https://ps99.biggamesapi.io/api/tradingServers?placeId=" .. game.PlaceId)
-            end)
-            if ok and result and result ~= "" then
-                local dok, data = pcall(function() return HttpService:JSONDecode(result) end)
-                if dok and data and data.data and #data.data > 0 then
-                    -- Pick a random one from the list that isn't our current server
-                    local valid = {}
-                    for _, srv in ipairs(data.data) do
-                        local jobId = srv.jobId or srv.id
-                        if jobId and jobId ~= game.JobId then
-                            table.insert(valid, jobId)
+            updateDebug("🗳️ Terminal: searching for trading servers...")
+            -- Use each item in the watchlist as a search query
+            local terminalRemote = ReplicatedStorage:FindFirstChild("Network") and
+                ReplicatedStorage.Network:FindFirstChild("TradingTerminal_Search")
+
+            if terminalRemote then
+                local foundJobId = nil
+                local foundPlaceId = nil
+
+                -- Search using each target item until we find a server
+                for _, target in ipairs(_G.BoothSniperSettings.Items) do
+                    if foundJobId then break end
+                    local itemName = target.ItemName
+                    if not itemName then continue end
+
+                    local searchQuery = HttpService:JSONEncode({ id = itemName })
+                    local ok, results = pcall(function()
+                        return terminalRemote:InvokeServer("Misc", searchQuery, nil, true)
+                    end)
+
+                    if ok and type(results) == "table" then
+                        for _, entry in ipairs(results) do
+                            local jobId = entry.job_id
+                            local placeId = entry.place_id
+                            if jobId and jobId ~= game.JobId then
+                                foundJobId = jobId
+                                foundPlaceId = placeId or game.PlaceId
+                                addLog(string.format("🗳️ Found server for %s!", itemName), Color3.fromRGB(100, 200, 255))
+                                break
+                            end
                         end
                     end
-                    if #valid > 0 then
-                        local picked = valid[math.random(1, #valid)]
-                        alertDebug("🗳️ Hopping to Trading Server...", 4)
-                        TeleportService:TeleportToPlaceInstance(game.PlaceId, picked, LocalPlayer)
-                        task.wait(10)
-                        isHopping = false
-                        timeInServer = 0
-                        return
-                    end
                 end
+
+                if foundJobId then
+                    alertDebug("🗳️ Hopping to Terminal Server...", 4)
+                    TeleportService:TeleportToPlaceInstance(foundPlaceId, foundJobId, LocalPlayer)
+                    task.wait(10)
+                    isHopping = false
+                    timeInServer = 0
+                    return
+                else
+                    updateDebug("⚠️ Terminal: no results, falling back to random hop...")
+                end
+            else
+                updateDebug("⚠️ Terminal remote not found, falling back...")
             end
-            -- If terminal search returned nothing, fall through to random
-            updateDebug("⚠️ Terminal API empty, falling back to random hop...")
         end
 
         -- Random public server fallback
