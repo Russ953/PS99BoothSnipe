@@ -1,4 +1,4 @@
-print("v2.9")
+print("v3.0")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -68,14 +68,14 @@ end
 updateDebug("[AI] Waiting for Player Data to Load...")
 
 -- ========================================================================
--- GEM PARSER
+-- PRICE / QUANTITY PARSER  (handles x32.8k, x2,208, 20000, etc.)
 -- ========================================================================
 local function parsePrice(text)
     if type(text) ~= "string" then return tonumber(text) or 0 end
-    text = text:lower():gsub(",", ""):gsub(" ", "")
+    text = text:lower():gsub(",", ""):gsub(" ", ""):gsub("^x", "")
     for suffix, mult in pairs({ t = 1e12, b = 1e9, m = 1e6, k = 1e3 }) do
         local num = text:match("([%d%.]+)" .. suffix)
-        if num then return tonumber(num) * mult end
+        if num then return math.floor(tonumber(num) * mult) end
     end
     return tonumber(text:match("([%d%.]+)")) or 0
 end
@@ -110,9 +110,9 @@ if not _G.BoothSniperSettings then
         TerminalSearch = true, RandomJoin = true, HopDelay = 5,
         AutoExecute = true, AutoOpenBags = true,
         Items = {
-            { Class = "MiscItems", TerminalClass = "Misc",  ItemName = "Insta Plant Capsule", MaxPrice = 20000, Priority = "insta"   },
-            { Class = "Seeds",     TerminalClass = "Seed",  ItemName = "Diamond",             MaxPrice = 5000,  Priority = "diamond" },
-            { Class = "MiscItems", TerminalClass = "Misc",  ItemName = "Seed Bag",            MaxPrice = 5000  }
+            { Class = "MiscItems", TerminalClass = "Misc", ItemName = "Insta Plant Capsule", MaxPrice = 20000, Priority = "insta"   },
+            { Class = "Seeds",     TerminalClass = "Seed", ItemName = "Diamond",             MaxPrice = 5000,  Priority = "diamond" },
+            { Class = "MiscItems", TerminalClass = "Misc", ItemName = "Seed Bag",            MaxPrice = 5000  }
         }
     }
 end
@@ -210,15 +210,15 @@ if not isPlaza then
 -- MODE 2: BOOTH SNIPER
 -- ========================================================================
 else
-    local isScanning  = true
-    local isHopping   = false
+    local isScanning   = true
+    local isHopping    = false
     local timeInServer = 0
     local cachedAssetIDs = {}
-    local seenItems   = {}
+    local seenItems    = {}
     local addLog = function(msg, color) end
 
     -- ================================================================
-    -- ASSET ID FETCHER (runs first so inventory check can use IDs)
+    -- ASSET ID FETCHER — BigGames API, cached
     -- ================================================================
     local function fetchItemAssetID(class, itemName)
         local cacheKey = class .. "_" .. itemName
@@ -235,16 +235,18 @@ else
                         local id = tostring(item.configData.Icon):match("%d+")
                         if id then
                             cachedAssetIDs[cacheKey] = id
-                            print(string.format("[AssetID] %s = rbxassetid://%s", itemName, id))
+                            print(string.format("[AssetID] %s (%s) = %s", itemName, class, id))
                             return id
                         end
                     end
                 end
             end
         end
+        warn("[AssetID] FAILED to fetch: " .. class .. " / " .. itemName)
         return nil
     end
 
+    -- Fetch all item asset IDs upfront
     for _, t in ipairs(_G.BoothSniperSettings.Items) do
         if t.Class and t.ItemName and not t.AssetID then
             local id = fetchItemAssetID(t.Class, t.ItemName)
@@ -253,56 +255,56 @@ else
     end
 
     -- ================================================================
-    -- INVENTORY COUNT
-    -- Reads CATEGORY_Farming > Items > children named "ItemSlot"
-    -- Each slot has:
-    --   .Icon      (ImageLabel) → .Image = "rbxassetid://XXXXX"
-    --   .Quantity  (TextLabel)  → .Text  = "x1524"
+    -- INVENTORY COUNT — reads HotbarMain Slot1-6
+    -- Matches slot icon IDs against BigGames API cached asset IDs
+    -- Quantity text format: "x2,208" / "x32.8k" / "x40"
     -- ================================================================
     local function getInventoryCounts()
         local instaCount   = 0
         local diamondCount = 0
 
-        -- Get the asset IDs we care about
-        local instaAssetID   = cachedAssetIDs["MiscItems_Insta Plant Capsule"]
-        local diamondAssetID = cachedAssetIDs["Seeds_Diamond"]
+        local instaID   = cachedAssetIDs["MiscItems_Insta Plant Capsule"]
+        local diamondID = cachedAssetIDs["Seeds_Diamond"]
 
-        if not instaAssetID and not diamondAssetID then
-            print("[Inventory] Asset IDs not cached yet, skipping count")
+        if not instaID and not diamondID then
+            print("[Inventory] Asset IDs not ready yet")
             return 0, 0
         end
 
         local ok, err = pcall(function()
-            local itemsFolder = LocalPlayer.PlayerGui
-                :WaitForChild("Inventory", 5)
-                .Frame.Main.FilteredItems.Filters
-                .MiscWithCategories.CATEGORY_Farming.Items
+            local content = LocalPlayer.PlayerGui
+                :WaitForChild("Main", 5)
+                :WaitForChild("HotbarMain", 5)
+                :WaitForChild("Content", 5)
 
-            for _, slot in ipairs(itemsFolder:GetChildren()) do
-                if slot.Name ~= "ItemSlot" then continue end
+            for i = 1, 6 do
+                local slot = content:FindFirstChild("Slot" .. i)
+                if not slot then continue end
 
-                local iconObj = slot:FindFirstChild("Icon")
-                local qtyObj  = slot:FindFirstChild("Quantity")
+                local slotBtn  = slot:FindFirstChild("SlotButton")
+                if not slotBtn then continue end
+                local itemSlot = slotBtn:FindFirstChild("ItemSlot")
+                if not itemSlot then continue end
+
+                local iconObj = itemSlot:FindFirstChild("Icon")
+                local qtyObj  = itemSlot:FindFirstChild("Quantity")
                 if not iconObj or not qtyObj then continue end
 
-                -- Icon is an ImageLabel, read .Image property
                 local slotIconID = tostring(iconObj.Image):match("%d+") or ""
-                -- Quantity text is like "x1524", strip the x
-                local qty = tonumber(tostring(qtyObj.Text):match("%d+")) or 0
+                local qty        = parsePrice(qtyObj.Text)  -- handles x32.8k etc.
 
-                if instaAssetID   and slotIconID == tostring(instaAssetID):match("%d+")   then
+                if instaID   and slotIconID == instaID   then
                     instaCount = instaCount + qty
-                elseif diamondAssetID and slotIconID == tostring(diamondAssetID):match("%d+") then
+                    print(string.format("[Inventory] Slot%d = Insta Plant Capsule x%d", i, qty))
+                elseif diamondID and slotIconID == diamondID then
                     diamondCount = diamondCount + qty
+                    print(string.format("[Inventory] Slot%d = Diamond Seeds x%d", i, qty))
                 end
             end
         end)
 
-        if not ok then
-            print("[Inventory] Read error:", err)
-        end
-
-        print(string.format("[Inventory] Insta Plant: %d | Diamond Seeds: %d", instaCount, diamondCount))
+        if not ok then print("[Inventory] Error:", err) end
+        print(string.format("[Inventory] Total — Insta: %d | Diamond: %d", instaCount, diamondCount))
         return instaCount, diamondCount
     end
 
@@ -323,10 +325,8 @@ else
 
     -- ================================================================
     -- SERVER HOP
-    -- Priority rules:
-    --   diamondCount < instaCount  → buy Diamond Seeds first
-    --   otherwise                  → buy Insta Plant Capsule first
-    --   Seed Bag is always last fallback
+    -- diamondCount < instaCount  →  buy Diamond Seeds first
+    -- otherwise                  →  buy Insta Plant first
     -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
@@ -334,43 +334,38 @@ else
         if _G.BoothSniperSettings.TerminalSearch then
             local instaCount, diamondCount = getInventoryCounts()
 
-            -- Separate items by priority tag and unprioritised
             local instaItem, diamondItem, otherItems = nil, nil, {}
             for _, t in ipairs(_G.BoothSniperSettings.Items) do
-                if t.Priority == "insta"   then instaItem   = t
+                if     t.Priority == "insta"   then instaItem   = t
                 elseif t.Priority == "diamond" then diamondItem = t
-                else table.insert(otherItems, t)
+                else   table.insert(otherItems, t)
                 end
             end
 
-            -- Build search order based on inventory
             local searchOrder = {}
             if diamondCount < instaCount then
-                -- Diamond Seeds are lower → buy diamonds first
-                print(string.format("[Priority] diamonds(%d) < insta(%d) → buy Diamond Seeds first", diamondCount, instaCount))
+                print(string.format("[Priority] diamonds(%d) < insta(%d) → Diamond Seeds first", diamondCount, instaCount))
                 if diamondItem then table.insert(searchOrder, diamondItem) end
                 if instaItem   then table.insert(searchOrder, instaItem)   end
             else
-                -- Insta Plants are equal or lower → buy insta first
-                print(string.format("[Priority] insta(%d) <= diamonds(%d) → buy Insta Plant first", instaCount, diamondCount))
+                print(string.format("[Priority] insta(%d) <= diamonds(%d) → Insta Plant first", instaCount, diamondCount))
                 if instaItem   then table.insert(searchOrder, instaItem)   end
                 if diamondItem then table.insert(searchOrder, diamondItem) end
             end
             for _, t in ipairs(otherItems) do table.insert(searchOrder, t) end
 
-            -- Search in order, teleport to first found
             for _, target in ipairs(searchOrder) do
                 local itemName  = target.ItemName
                 local termClass = target.TerminalClass or "Misc"
                 local termId    = target.TerminalID or itemName
                 if not itemName then continue end
 
-                updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
+                updateDebug(string.format("🗳️ Terminal: '%s'...", itemName))
                 local entry = terminalSearch(termClass, termId)
                 if entry and entry.job_id and entry.job_id ~= game.JobId then
-                    print(string.format("[Terminal] Found '%s': job=%s", itemName, entry.job_id))
+                    print(string.format("[Terminal] Found '%s': %s", itemName, entry.job_id))
                     alertDebug(string.format("🗳️ Joining: '%s'!", itemName), 4)
-                    addLog(string.format("🗳️ Hopping: %s", itemName), Color3.fromRGB(100, 200, 255))
+                    addLog(string.format("🗳️ Hopping: %s", itemName), Color3.fromRGB(100,200,255))
                     TeleportService:TeleportToPlaceInstance(entry.place_id or game.PlaceId, entry.job_id, LocalPlayer)
                     task.wait(10)
                     isHopping = false
@@ -378,11 +373,9 @@ else
                     return
                 end
             end
-
             updateDebug("⚠️ Terminal: no results, random hopping...")
         end
 
-        -- Random fallback
         if _G.BoothSniperSettings.RandomJoin then
             updateDebug("🎲 Random Hopping...")
             local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
