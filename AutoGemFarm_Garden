@@ -1,3 +1,4 @@
+print("v1.1")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 -- ══════════════════════════════════════════
