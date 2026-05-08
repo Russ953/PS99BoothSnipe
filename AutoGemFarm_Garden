@@ -1,4 +1,4 @@
-print("v2.7")
+print("v2.8")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -109,9 +109,36 @@ _G.BoothSniperServerHopLoaded = true
 
 if not _G.BoothSniperSettings then
     _G.BoothSniperSettings = {
-        ShowGUI = true, ScanDelay = 0.5, AutoHop = true,
-        TerminalSearch = true, RandomJoin = true, HopDelay = 5,
-        AutoExecute = true, AutoOpenBags = true, Items = {}
+        ShowGUI    = false,
+        ScanDelay  = 0.5,
+        AutoHop    = true,
+        TerminalSearch = true,
+        RandomJoin = true,
+        HopDelay   = 5,
+        AutoExecute = true,
+        AutoOpenBags = true,
+        Items = {
+            {
+                Class         = "MiscItems",
+                TerminalClass = "Misc",
+                ItemName      = "Insta Plant Capsule",
+                MaxPrice      = 20000,
+                Priority      = "insta"   -- tag for smart priority logic
+            },
+            {
+                Class         = "Seeds",
+                TerminalClass = "Seed",
+                ItemName      = "Diamond",
+                MaxPrice      = 5000,
+                Priority      = "diamond"
+            },
+            {
+                Class         = "MiscItems",
+                TerminalClass = "Misc",
+                ItemName      = "Seed Bag",
+                MaxPrice      = 5000
+            }
+        }
     }
 end
 
@@ -227,48 +254,130 @@ else
     local seenItems = {}
     local addLog = function(msg, color) end
 
-    local function terminalSearch(termClass, itemName)
+    -- ================================================================
+    -- INVENTORY COUNT — reads CATEGORY_Farming ItemSlots from PlayerGui
+    -- Returns: instaCount, diamondCount
+    -- ================================================================
+    local function getInventoryCounts()
+        local instaCount   = 0
+        local diamondCount = 0
+        local ok, err = pcall(function()
+            local itemsFolder = LocalPlayer.PlayerGui
+                :WaitForChild("Inventory", 5)
+                :WaitForChild("Frame", 5)
+                :WaitForChild("Main", 5)
+                :WaitForChild("FilteredItems", 5)
+                :WaitForChild("Filters", 5)
+                :WaitForChild("MiscWithCategories", 5)
+                :WaitForChild("CATEGORY_Farming", 5)
+                :WaitForChild("Items", 5)
+
+            -- Get asset IDs for both items from cache
+            local instaAsset   = cachedAssetIDs["MiscItems_Insta Plant Capsule"]
+            local diamondAsset = cachedAssetIDs["Seeds_Diamond"]
+
+            for _, slot in ipairs(itemsFolder:GetChildren()) do
+                if slot.Name ~= "ItemSlot" then continue end
+                local iconObj = slot:FindFirstChild("Icon")
+                local qtyObj  = slot:FindFirstChild("Quantity")
+                if not iconObj or not qtyObj then continue end
+
+                local slotIconID = tostring(iconObj.Image):match("%d+") or ""
+                local qty = tonumber(tostring(qtyObj.Text):match("%d+")) or 0
+
+                if instaAsset and slotIconID == (tostring(instaAsset):match("%d+") or "") then
+                    instaCount = instaCount + qty
+                elseif diamondAsset and slotIconID == (tostring(diamondAsset):match("%d+") or "") then
+                    diamondCount = diamondCount + qty
+                end
+            end
+        end)
+        if not ok then
+            print("[Inventory] Could not read:", err)
+        end
+        print(string.format("[Inventory] Insta: %d | Diamond Seeds: %d", instaCount, diamondCount))
+        return instaCount, diamondCount
+    end
+
+    -- ================================================================
+    -- Terminal search helper
+    -- ================================================================
+    local function terminalSearch(termClass, itemId)
         local Network = ReplicatedStorage:FindFirstChild("Network")
         if not Network then return nil end
         local remote = Network:FindFirstChild("TradingTerminal_Search")
         if not remote then return nil end
-        local args = { termClass, '{"id":"' .. itemName .. '"}', nil, true }
+        local args = { termClass, '{"id":"' .. itemId .. '"}', nil, true }
         local ok, result = pcall(function() return remote:InvokeServer(unpack(args)) end)
         if not ok or type(result) ~= "table" then return nil end
         if result.job_id then return result end
         return nil
     end
 
+    -- ================================================================
+    -- SERVER HOP — priority based on inventory
+    -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
 
         if _G.BoothSniperSettings.TerminalSearch then
-            local candidates = {}
-            for _, target in ipairs(_G.BoothSniperSettings.Items) do
-                local itemName = target.ItemName
-                local termClass = target.TerminalClass or "Misc"
-                if not itemName then continue end
-                updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
-                local entry = terminalSearch(termClass, itemName)
-                if entry and entry.job_id and entry.job_id ~= game.JobId then
-                    table.insert(candidates, { jobId = entry.job_id, placeId = entry.place_id or game.PlaceId, itemName = itemName })
-                    print(string.format("[Terminal] Found server for '%s': job=%s", itemName, entry.job_id))
+
+            -- Read current inventory to decide priority
+            local instaCount, diamondCount = getInventoryCounts()
+
+            -- Build ordered search list: priority item first
+            local searchOrder = {}
+            if instaCount <= diamondCount then
+                -- Need more Insta Plants → search Insta Plant first
+                print("[Priority] instaCount(" .. instaCount .. ") <= diamondCount(" .. diamondCount .. ") → prioritise Insta Plant Capsule")
+                for _, t in ipairs(_G.BoothSniperSettings.Items) do
+                    if t.Priority == "insta"   then table.insert(searchOrder, 1, t) end
+                end
+                for _, t in ipairs(_G.BoothSniperSettings.Items) do
+                    if t.Priority == "diamond" then table.insert(searchOrder, t) end
+                end
+                for _, t in ipairs(_G.BoothSniperSettings.Items) do
+                    if not t.Priority          then table.insert(searchOrder, t) end
+                end
+            else
+                -- Have more Insta Plants → buy Diamond Seeds first
+                print("[Priority] instaCount(" .. instaCount .. ") > diamondCount(" .. diamondCount .. ") → prioritise Diamond Seeds")
+                for _, t in ipairs(_G.BoothSniperSettings.Items) do
+                    if t.Priority == "diamond" then table.insert(searchOrder, 1, t) end
+                end
+                for _, t in ipairs(_G.BoothSniperSettings.Items) do
+                    if t.Priority == "insta"   then table.insert(searchOrder, t) end
+                end
+                for _, t in ipairs(_G.BoothSniperSettings.Items) do
+                    if not t.Priority          then table.insert(searchOrder, t) end
                 end
             end
-            if #candidates > 0 then
-                local pick = candidates[1]
-                alertDebug(string.format("🗳️ Joining server with '%s'!", pick.itemName), 4)
-                addLog(string.format("🗳️ Hopping: %s", pick.itemName), Color3.fromRGB(100, 200, 255))
-                TeleportService:TeleportToPlaceInstance(pick.placeId, pick.jobId, LocalPlayer)
-                task.wait(10)
-                isHopping = false
-                timeInServer = 0
-                return
-            else
-                updateDebug("⚠️ Terminal: no results, random hopping...")
+
+            for _, target in ipairs(searchOrder) do
+                local itemName  = target.ItemName
+                local termClass = target.TerminalClass or "Misc"
+                -- For Diamond Seeds the terminal id is "Diamond", itemName is "Diamond"
+                local termId    = target.TerminalID or itemName
+                if not itemName then continue end
+
+                updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
+                local entry = terminalSearch(termClass, termId)
+                if entry and entry.job_id and entry.job_id ~= game.JobId then
+                    print(string.format("[Terminal] Found server for '%s': job=%s", itemName, entry.job_id))
+                    alertDebug(string.format("🗳️ Joining server with '%s'!", itemName), 4)
+                    addLog(string.format("🗳️ Hopping: %s", itemName), Color3.fromRGB(100, 200, 255))
+                    TeleportService:TeleportToPlaceInstance(entry.place_id or game.PlaceId, entry.job_id, LocalPlayer)
+                    task.wait(10)
+                    isHopping = false
+                    timeInServer = 0
+                    return
+                end
             end
+
+            updateDebug("⚠️ Terminal: no results, random hopping...")
         end
 
+        -- Random fallback
         if _G.BoothSniperSettings.RandomJoin then
             updateDebug("🎲 Random Hopping...")
             local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
@@ -296,6 +405,9 @@ else
         timeInServer = 0
     end
 
+    -- ================================================================
+    -- ASSET ID FETCHER
+    -- ================================================================
     local function fetchItemAssetID(class, itemName)
         local cacheKey = class .. "_" .. itemName
         if cachedAssetIDs[cacheKey] then return cachedAssetIDs[cacheKey] end
@@ -320,7 +432,10 @@ else
     for _, t in ipairs(_G.BoothSniperSettings.Items) do
         if t.Class and t.ItemName and not t.AssetID then
             local id = fetchItemAssetID(t.Class, t.ItemName)
-            if id then t.AssetID = id end
+            if id then
+                t.AssetID = id
+                print(string.format("[AssetID] %s = %s", t.ItemName, id))
+            end
         end
     end
 
