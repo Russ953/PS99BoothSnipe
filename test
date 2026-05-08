@@ -83,30 +83,37 @@ local function doServerHop(statusLabel)
         if statusLabel then statusLabel.Text = "📡 Searching Trading Terminal..." end
         print("[BoothSniper] Initiating Terminal Search...")
         
-        local terminalRemote = ReplicatedStorage:WaitForChild("Network"):WaitForChild("TradingTerminal_Search")
+        -- Added a 5-second timeout so it never yields infinitely!
+        local network = ReplicatedStorage:WaitForChild("Network", 5)
+        local terminalRemote = network and network:WaitForChild("TradingTerminal_Search", 5)
         
-        for _, target in ipairs(_G.BoothSniperSettings.Items) do
-            if target.ItemName then
-                local searchArgs = {}
-                searchArgs[1] = target.TerminalClass or target.Class:gsub("Items", "")
-                searchArgs[2] = '{"id":"' .. target.ItemName .. '"}'
-                searchArgs[4] = true
-                
-                local success, response = pcall(function()
-                    return terminalRemote:InvokeServer(unpack(searchArgs))
-                end)
-                
-                if success and response then
-                    local jobId, placeId = extractJobId(response)
-                    if jobId and jobId ~= game.JobId then
-                        print("[BoothSniper] Terminal found server! Teleporting to:", jobId)
-                        if statusLabel then statusLabel.Text = "🚀 Terminal Server Found! Teleporting..." end
-                        TeleportService:TeleportToPlaceInstance(placeId or game.PlaceId, jobId, LocalPlayer)
-                        task.wait(10)
+        if terminalRemote then
+            for _, target in ipairs(_G.BoothSniperSettings.Items) do
+                if target.ItemName then
+                    local searchArgs = {}
+                    searchArgs[1] = target.TerminalClass or target.Class:gsub("Items", "")
+                    searchArgs[2] = '{"id":"' .. target.ItemName .. '"}'
+                    searchArgs[4] = true
+                    
+                    print("[BoothSniper] Searching Terminal for:", target.ItemName)
+                    local success, response = pcall(function()
+                        return terminalRemote:InvokeServer(unpack(searchArgs))
+                    end)
+                    
+                    if success and response then
+                        local jobId, placeId = extractJobId(response)
+                        if jobId and jobId ~= game.JobId then
+                            print("[BoothSniper] Terminal found server! Teleporting to:", jobId)
+                            if statusLabel then statusLabel.Text = "🚀 Terminal Server Found! Teleporting..." end
+                            TeleportService:TeleportToPlaceInstance(placeId or game.PlaceId, jobId, LocalPlayer)
+                            task.wait(10)
+                        end
                     end
                 end
+                task.wait(0.5)
             end
-            task.wait(0.5)
+        else
+            warn("[BoothSniper] TradingTerminal_Search remote not found! Skipping to Random Hop.")
         end
     end
 
@@ -139,6 +146,7 @@ local function doServerHop(statusLabel)
     
     print("[BoothSniper] All hop methods failed. Retrying later.")
     isHopping = false
+    timeInServer = 0 -- Reset timer so it scans again before trying to hop
 end
 
 
@@ -251,7 +259,6 @@ local function scanAllBooths(statusLabel)
     if not boothsFolder then return end
 
     local myGems = getGems()
-    local foundCount = 0
     local uiUpdated = false
 
     for _, booth in ipairs(boothsFolder:GetChildren()) do
@@ -273,7 +280,6 @@ local function scanAllBooths(statusLabel)
 
                     for _, target in ipairs(_G.BoothSniperSettings.Items) do
                         if target.AssetID and cleanFoundID == getCleanID(target.AssetID) then
-                            foundCount += 1
                             
                             local costLabel = itemBox:FindFirstChild("Buy") and itemBox.Buy:FindFirstChild("Cost")
                                 
@@ -299,6 +305,7 @@ local function scanAllBooths(statusLabel)
                                         end)
                                         
                                         task.wait(1) 
+                                        -- Reset hop timer because we bought something!
                                         timeInServer = 0 
                                     end
                                 end
@@ -310,7 +317,8 @@ local function scanAllBooths(statusLabel)
         end
     end
 
-    if foundCount == 0 and _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
+    -- Trigger Hop if the timer runs out (ignores overpriced items now!)
+    if _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
         isHopping = true
         task.spawn(function() doServerHop(statusLabel) end)
         return
@@ -321,8 +329,6 @@ local function scanAllBooths(statusLabel)
         statusLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
     end
 end
-
-preLoadTargets()
 
 -- ══════════════════════════════════════════
 -- EXECUTION & GUI BUILDER
