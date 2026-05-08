@@ -1,4 +1,4 @@
-print("v2.2")
+print("v2.3")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -107,7 +107,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ══════════════════════════════════════════
 -- GLOBAL BACKGROUND BAG OPENER
--- FIX: correct arg is "Seed Bag" (with space), max 100 per call
 -- ══════════════════════════════════════════
 if _G.BoothSniperSettings.AutoOpenBags then
     task.spawn(function()
@@ -237,15 +236,14 @@ else
 
     -- ================================================================
     -- SERVER HOP
-    -- TerminalSearch = true -> uses in-game TradingTerminal_Search remote
-    -- RandomJoin = true     -> fallback: random public server
+    -- Uses TradingTerminal_Search in-game remote with correct arg layout:
+    -- InvokeServer(TerminalClass, '{"id":"ItemName"}', [3]=nil, [4]=true)
+    -- The [4]=true MUST be at explicit index 4, not passed as arg 3!
     -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
 
         if _G.BoothSniperSettings.TerminalSearch then
-            updateDebug("🗳️ Terminal: searching for trading servers...")
-            -- Use each item in the watchlist as a search query
             local terminalRemote = ReplicatedStorage:FindFirstChild("Network") and
                 ReplicatedStorage.Network:FindFirstChild("TradingTerminal_Search")
 
@@ -253,28 +251,42 @@ else
                 local foundJobId = nil
                 local foundPlaceId = nil
 
-                -- Search using each target item until we find a server
                 for _, target in ipairs(_G.BoothSniperSettings.Items) do
                     if foundJobId then break end
                     local itemName = target.ItemName
+                    local termClass = target.TerminalClass or "Misc"
                     if not itemName then continue end
 
-                    local searchQuery = HttpService:JSONEncode({ id = itemName })
+                    -- CRITICAL: arg layout must be [1]=class, [2]=jsonString, [3]=nil, [4]=true
+                    -- unpack() drops nil so we must build the table with explicit index 4
+                    local searchArgs = {
+                        termClass,
+                        '{"id":"' .. itemName .. '"}',
+                        [4] = true
+                    }
+
+                    updateDebug(string.format("🗳️ Terminal: searching '%s'...", itemName))
+                    print("[Terminal] Sending:", termClass, searchArgs[2], "[4]=", searchArgs[4])
+
                     local ok, results = pcall(function()
-                        return terminalRemote:InvokeServer("Misc", searchQuery, nil, true)
+                        return terminalRemote:InvokeServer(unpack(searchArgs, 1, 4))
                     end)
 
+                    print("[Terminal] ok=", ok, "type=", type(results))
                     if ok and type(results) == "table" then
-                        for _, entry in ipairs(results) do
+                        print("[Terminal] result count=", #results)
+                        for i, entry in ipairs(results) do
+                            print("[Terminal] entry", i, "job_id=", entry.job_id, "place_id=", entry.place_id)
                             local jobId = entry.job_id
                             local placeId = entry.place_id
                             if jobId and jobId ~= game.JobId then
                                 foundJobId = jobId
                                 foundPlaceId = placeId or game.PlaceId
-                                addLog(string.format("🗳️ Found server for %s!", itemName), Color3.fromRGB(100, 200, 255))
                                 break
                             end
                         end
+                    else
+                        print("[Terminal] Failed or no table. results=", tostring(results))
                     end
                 end
 
@@ -293,7 +305,7 @@ else
             end
         end
 
-        -- Random public server fallback
+        -- Random fallback
         if _G.BoothSniperSettings.RandomJoin then
             updateDebug("🎲 Random Hopping...")
             local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
