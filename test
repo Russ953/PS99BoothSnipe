@@ -1,6 +1,8 @@
 -- ══════════════════════════════════════════
 -- FAILSAFE & GHOST KILLER
 -- ══════════════════════════════════════════
+_G.BoothSniperServerHopLoaded = true -- Prevents double-execution on server hop!
+
 if not _G.BoothSniperSettings then
     _G.BoothSniperSettings = {
         ShowGUI = true, ScanDelay = 0.5, AutoHop = true, 
@@ -30,9 +32,10 @@ end
 local isScanning = false
 local isHopping = false
 local timeInServer = 0
+local statusTimeout = 0 -- Prevents status label from flickering
 local cachedAssetIDs = {}
-local seenItems = {} -- Prevents logging the same item 100 times
-local addLog = function(msg, color) end -- Placeholder, overwritten by GUI builder
+local seenItems = {}
+local addLog = function(msg, color) end
 
 -- ══════════════════════════════════════════
 -- SINGLE-FIRE TELEPORT QUEUE
@@ -43,11 +46,10 @@ if queue_on_teleport and not _G.BoothSniperQueueSet then
     LocalPlayer.OnTeleport:Connect(function()
         local settingsJSON = HttpService:JSONEncode(_G.BoothSniperSettings)
         local autoRunScript = string.format([[
-            task.wait(3) 
+            task.wait(2) 
+            if _G.BoothSniperServerHopLoaded then return end -- Kills payload if autoexec already ran it!
             local HttpService = game:GetService("HttpService")
-            if not _G.BoothSniperSettings then
-                _G.BoothSniperSettings = HttpService:JSONDecode('%s')
-            end
+            _G.BoothSniperSettings = HttpService:JSONDecode([=[%s]=])
             loadstring(game:HttpGet("https://raw.githubusercontent.com/Russ953/PS99BoothSnipe/main/test"))()
         ]], settingsJSON)
         pcall(function() queue_on_teleport(autoRunScript) end)
@@ -74,7 +76,7 @@ local function doServerHop(statusLabel)
     if currentRunID ~= _G.BoothSniperRunID then return end
 
     if _G.BoothSniperSettings.TerminalSearch then
-        if statusLabel then statusLabel.Text = "📡 Searching Trading Terminal..." end
+        if statusLabel then statusLabel.Text = "📡 Searching Trading Terminal..."; statusTimeout = os.time() + 5 end
         local network = ReplicatedStorage:WaitForChild("Network", 5)
         local terminalRemote = network and network:WaitForChild("TradingTerminal_Search", 5)
         
@@ -86,7 +88,7 @@ local function doServerHop(statusLabel)
                     if success and response then
                         local jobId, placeId = extractJobId(response)
                         if jobId and jobId ~= game.JobId then
-                            if statusLabel then statusLabel.Text = "🚀 Terminal Server Found! Teleporting..." end
+                            if statusLabel then statusLabel.Text = "🚀 Terminal Server Found! Teleporting..."; statusTimeout = os.time() + 10 end
                             TeleportService:TeleportToPlaceInstance(placeId or game.PlaceId, jobId, LocalPlayer)
                             task.wait(10)
                         end
@@ -98,7 +100,7 @@ local function doServerHop(statusLabel)
     end
 
     if _G.BoothSniperSettings.RandomJoin then
-        if statusLabel then statusLabel.Text = "🎲 Terminal empty. Random Hopping..." end
+        if statusLabel then statusLabel.Text = "🎲 Terminal empty. Random Hopping..."; statusTimeout = os.time() + 5 end
         local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
         local success, result = pcall(function() return game:HttpGet(url) end)
         if success then
@@ -144,7 +146,6 @@ local function fetchItemAssetID(class, itemName)
 end
 
 local function getCleanID(assetText) return assetText and tostring(assetText):match("%d+") or "" end
-
 local function parsePrice(text)
     if type(text) ~= "string" then return 0 end
     text = text:lower():gsub(",", ""):gsub(" ", "")
@@ -180,8 +181,6 @@ local function scanAllBooths(statusLabel)
     if not boothsFolder then return end
 
     local myGems = getGems()
-    local uiUpdated = false
-    local itemsFoundThisTick = 0
 
     for _, booth in ipairs(boothsFolder:GetChildren()) do
         local ownerID = booth:GetAttribute("Owner")
@@ -206,7 +205,6 @@ local function scanAllBooths(statusLabel)
                                 local maxPrice = target.MaxPrice or math.huge
                                 local itemNameDisplay = target.ItemName or target.AssetID
                                 
-                                -- UI LOGGING SYSTEM
                                 if not seenItems[guid] then
                                     seenItems[guid] = true
                                     
@@ -217,7 +215,11 @@ local function scanAllBooths(statusLabel)
                                         
                                         if buyAmount > 0 then
                                             addLog(string.format("✔️ Buying %dx %s for %s/ea", buyAmount, itemNameDisplay, costLabel.Text), Color3.fromRGB(100, 255, 130))
-                                            if statusLabel then statusLabel.Text = string.format("✔️ Buying %dx %s!", buyAmount, itemNameDisplay); statusLabel.TextColor3 = Color3.fromRGB(100, 255, 130); uiUpdated = true end
+                                            if statusLabel then 
+                                                statusLabel.Text = string.format("✔️ Bought %dx %s!", buyAmount, itemNameDisplay)
+                                                statusLabel.TextColor3 = Color3.fromRGB(100, 255, 130)
+                                                statusTimeout = os.time() + 3 -- Keeps the text visible for 3 seconds!
+                                            end
                                             
                                             task.spawn(function() pcall(function() purchaseItem(ownerID, guid, buyAmount) end) end)
                                             task.wait(1) 
@@ -226,7 +228,7 @@ local function scanAllBooths(statusLabel)
                                             addLog(string.format("❌ Found %s but not enough gems!", itemNameDisplay), Color3.fromRGB(230, 80, 80))
                                         end
                                     else
-                                        addLog(string.format("⚠️ Found %s for %s (Max: %s)", itemNameDisplay, costLabel.Text, tostring(maxPrice)), Color3.fromRGB(230, 150, 80))
+                                        addLog(string.format("⚠️ Skipped %s: %s (Max: %s)", itemNameDisplay, costLabel.Text, tostring(maxPrice)), Color3.fromRGB(230, 150, 80))
                                     end
                                 end
                             end
@@ -243,7 +245,8 @@ local function scanAllBooths(statusLabel)
         return
     end
 
-    if isScanning and statusLabel and not uiUpdated and not isHopping then
+    -- Only reset the status to "Scanning" if the 3-second timeout has passed
+    if isScanning and statusLabel and not isHopping and os.time() > statusTimeout then
         statusLabel.Text = string.format("🔍 Scanning... (Hop in %ds)", math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer)))
         statusLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
     end
@@ -266,7 +269,7 @@ if _G.BoothSniperSettings.ShowGUI then
     ScreenGui.Parent = game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
 
     local Frame = Instance.new("Frame")
-    Frame.Size = UDim2.new(0, 320, 0, 280) -- Made taller to fit the log
+    Frame.Size = UDim2.new(0, 320, 0, 280)
     Frame.Position = UDim2.new(0.5, -160, 0.5, -140)
     Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
     Frame.Parent = ScreenGui
@@ -320,7 +323,6 @@ if _G.BoothSniperSettings.ShowGUI then
     ToggleBtn.Parent = Frame
     Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 6)
 
-    -- SCROLLING LOG UI
     local LogFrame = Instance.new("ScrollingFrame")
     LogFrame.Size = UDim2.new(1, -20, 1, -115)
     LogFrame.Position = UDim2.new(0, 10, 0, 105)
@@ -335,7 +337,6 @@ if _G.BoothSniperSettings.ShowGUI then
     LogList.SortOrder = Enum.SortOrder.LayoutOrder
     LogList.Padding = UDim.new(0, 2)
 
-    -- Override the empty addLog function to print to UI
     addLog = function(msg, color)
         local lbl = Instance.new("TextLabel")
         lbl.Size = UDim2.new(1, -5, 0, 16)
@@ -348,7 +349,6 @@ if _G.BoothSniperSettings.ShowGUI then
         lbl.TextWrapped = true
         lbl.Parent = LogFrame
         
-        -- Auto scroll to bottom
         task.spawn(function()
             task.wait(0.05)
             LogFrame.CanvasPosition = Vector2.new(0, LogList.AbsoluteContentSize.Y)
@@ -370,7 +370,7 @@ if _G.BoothSniperSettings.ShowGUI then
             isScanning = true
             timeInServer = 0
             isHopping = false
-            seenItems = {} -- Clear logs when restarted
+            seenItems = {} 
             for _, c in ipairs(LogFrame:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
             
             ToggleBtn.Text = "⏸ Stop Scanner"
