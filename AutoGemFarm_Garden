@@ -12,7 +12,7 @@ if not _G.BoothSniperSettings then
     _G.BoothSniperSettings = {
         ShowGUI = true, ScanDelay = 0.5, AutoHop = true, 
         TerminalSearch = true, RandomJoin = true, HopDelay = 5, 
-        AutoExecute = true, -- NEW: Toggle Auto-Execute on rejoin
+        AutoExecute = true,
         Items = {}
     }
 end
@@ -29,7 +29,6 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
--- Wait for UI to be ready
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
 local CoreGui = game:GetService("CoreGui")
 
@@ -238,12 +237,18 @@ local function scanAllBooths(statusLabel)
                                                 statusTimeout = os.time() + 3
                                             end
                                             
+                                            -- COMPLETION RECHECK SYSTEM
                                             task.spawn(function() 
+                                                local startGems = getGems()
                                                 local success, response = purchaseItem(ownerID, guid, buyAmount)
-                                                if success and response ~= false then
+                                                
+                                                task.wait(0.5) -- Wait to see if gems actually go down
+                                                
+                                                if success and (response == true or getGems() < startGems) then
                                                     addLog(string.format("✅ Successfully bought %s!", itemNameDisplay), Color3.fromRGB(100, 255, 130))
                                                 else
-                                                    addLog(string.format("❌ Purchase failed for %s", itemNameDisplay), Color3.fromRGB(230, 80, 80))
+                                                    addLog(string.format("❌ Purchase failed for %s. Retrying...", itemNameDisplay), Color3.fromRGB(230, 80, 80))
+                                                    seenItems[guid] = nil -- REMOVE FROM IGNORE LIST SO IT SCANS AGAIN!
                                                 end
                                             end)
                                             
