@@ -1,4 +1,4 @@
-print("v2.5")
+print("v2.6")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -106,27 +106,6 @@ local TeleportService = game:GetService("TeleportService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ══════════════════════════════════════════
--- GLOBAL BACKGROUND BAG OPENER
--- ══════════════════════════════════════════
-if _G.BoothSniperSettings.AutoOpenBags then
-    task.spawn(function()
-        local bagRemote = nil
-        while not bagRemote do
-            if currentRunID ~= _G.BoothSniperRunID then return end
-            local network = ReplicatedStorage:FindFirstChild("Network")
-            if network then bagRemote = network:FindFirstChild("GiftBag_Open") end
-            if not bagRemote then task.wait(1) end
-        end
-        alertDebug("[AI] Bag Opener Hooked & Running!", 2)
-        -- Exact working args: "Seed Bag", 100
-        while task.wait(0.1) do
-            if currentRunID ~= _G.BoothSniperRunID then return end
-            pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
-        end
-    end)
-end
-
--- ══════════════════════════════════════════
 -- MASTER ROUTER
 -- ══════════════════════════════════════════
 local PLACE_ID = game.PlaceId
@@ -225,7 +204,7 @@ if not isPlaza then
     end
 
 -- ========================================================================
--- MODE 2: BOOTH SNIPER
+-- MODE 2: BOOTH SNIPER (plaza only)
 -- ========================================================================
 else
     local isScanning = true
@@ -236,10 +215,29 @@ else
     local addLog = function(msg, color) end
 
     -- ================================================================
+    -- BAG OPENER — runs only here, in plaza mode, after router
+    -- ================================================================
+    if _G.BoothSniperSettings.AutoOpenBags then
+        task.spawn(function()
+            local bagRemote = ReplicatedStorage:WaitForChild("Network", 10)
+                :WaitForChild("GiftBag_Open", 10)
+            if not bagRemote then
+                print("[BagOpener] ERROR: GiftBag_Open remote not found!")
+                return
+            end
+            print("[BagOpener] Hooked! Opening Seed Bags every 0.1s...")
+            while task.wait(0.1) do
+                if currentRunID ~= _G.BoothSniperRunID then
+                    print("[BagOpener] RunID changed, stopping.")
+                    return
+                end
+                pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
+            end
+        end)
+    end
+
+    -- ================================================================
     -- Terminal search helper
-    -- The remote returns a SINGLE flat table per call:
-    -- { user_id=..., place_id=..., job_id=..., booth=... }
-    -- NOT an array! Read keys directly from result.
     -- ================================================================
     local function terminalSearch(termClass, itemName)
         local Network = ReplicatedStorage:FindFirstChild("Network")
@@ -261,11 +259,7 @@ else
             return nil
         end
         if type(result) ~= "table" then return nil end
-        -- Result is a flat table: { user_id, place_id, job_id, booth }
-        -- job_id is the key field we need
-        if result.job_id then
-            return result
-        end
+        if result.job_id then return result end
         return nil
     end
 
@@ -287,8 +281,8 @@ else
                 local entry = terminalSearch(termClass, itemName)
                 if entry and entry.job_id and entry.job_id ~= game.JobId then
                     table.insert(candidates, {
-                        jobId   = entry.job_id,
-                        placeId = entry.place_id or game.PlaceId,
+                        jobId    = entry.job_id,
+                        placeId  = entry.place_id or game.PlaceId,
                         itemName = itemName
                     })
                     print(string.format("[Terminal] Found server for '%s': job=%s", itemName, entry.job_id))
@@ -296,8 +290,6 @@ else
             end
 
             if #candidates > 0 then
-                -- Teleport to the first valid candidate
-                -- (All come from the trading terminal so they should be joinable)
                 local pick = candidates[1]
                 alertDebug(string.format("🗳️ Joining server with '%s'!", pick.itemName), 4)
                 addLog(string.format("🗳️ Hopping: %s", pick.itemName), Color3.fromRGB(100, 200, 255))
