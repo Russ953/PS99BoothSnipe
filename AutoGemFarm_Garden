@@ -107,7 +107,7 @@ if currentGems < 100000 and PLACE_ID ~= MAIN_GAME_ID then
     print("[AI] Low gems detected (<100k). Teleporting to Main Game to farm!")
     TeleportService:Teleport(MAIN_GAME_ID, LocalPlayer)
     return
-elseif currentGems >= 100000 and PLACE_ID == MAIN_GAME_ID then
+elseif currentGems >= 100000 and PLACE_ID ~= PLAZA_ID then
     print("[AI] High gems detected (>100k). Teleporting to Plaza to snipe!")
     TeleportService:Teleport(PLAZA_ID, LocalPlayer)
     return
