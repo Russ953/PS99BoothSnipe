@@ -117,8 +117,9 @@ if PLACE_ID == MAIN_GAME_ID then
     local flowerGarden = activeInstances:WaitForChild("FlowerGarden", 15)
     
     if flowerGarden then
-        local plant1 = flowerGarden:WaitForChild("Plants"):WaitForChild("Plant1")
-        rootPart.CFrame = plant1.CFrame + Vector3.new(0, 5, 0)
+               local plant1 = flowerGarden:WaitForChild("Plants"):WaitForChild("Plant1")
+        -- Models use :GetPivot() instead of .CFrame
+        rootPart.CFrame = plant1:GetPivot() + Vector3.new(0, 5, 0)
         
         local isFarming = true
         
