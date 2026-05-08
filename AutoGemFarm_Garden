@@ -1,4 +1,4 @@
-print("v3.0")
+print("v3.1")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -98,6 +98,15 @@ while getGems() == 0 and waitCount < 20 do
 end
 local currentGems = getGems()
 updateDebug(string.format("[AI] Data Loaded! Gems: %s", tostring(currentGems)))
+
+-- ══════════════════════════════════════════
+-- HARDCODED HOTBAR ICON IDs (from in-game debug)
+-- Slot 1 = Diamond Seeds      = 15554896030
+-- Slot 2 = Insta Plant Capsule = 15554896248
+-- Slot 3 = Seed Bag            = 15554896174
+-- ══════════════════════════════════════════
+local ICON_DIAMOND_SEED  = "15554896030"
+local ICON_INSTA_PLANT   = "15554896248"
 
 -- ══════════════════════════════════════════
 -- SETTINGS
@@ -218,7 +227,7 @@ else
     local addLog = function(msg, color) end
 
     -- ================================================================
-    -- ASSET ID FETCHER — BigGames API, cached
+    -- ASSET ID FETCHER — only used for booth icon matching
     -- ================================================================
     local function fetchItemAssetID(class, itemName)
         local cacheKey = class .. "_" .. itemName
@@ -235,18 +244,17 @@ else
                         local id = tostring(item.configData.Icon):match("%d+")
                         if id then
                             cachedAssetIDs[cacheKey] = id
-                            print(string.format("[AssetID] %s (%s) = %s", itemName, class, id))
+                            print(string.format("[AssetID] %s = %s", itemName, id))
                             return id
                         end
                     end
                 end
             end
         end
-        warn("[AssetID] FAILED to fetch: " .. class .. " / " .. itemName)
+        warn("[AssetID] FAILED: " .. class .. " / " .. itemName)
         return nil
     end
 
-    -- Fetch all item asset IDs upfront
     for _, t in ipairs(_G.BoothSniperSettings.Items) do
         if t.Class and t.ItemName and not t.AssetID then
             local id = fetchItemAssetID(t.Class, t.ItemName)
@@ -255,21 +263,11 @@ else
     end
 
     -- ================================================================
-    -- INVENTORY COUNT — reads HotbarMain Slot1-6
-    -- Matches slot icon IDs against BigGames API cached asset IDs
-    -- Quantity text format: "x2,208" / "x32.8k" / "x40"
+    -- INVENTORY COUNT — hotbar Slot1-6, hardcoded icon IDs
     -- ================================================================
     local function getInventoryCounts()
         local instaCount   = 0
         local diamondCount = 0
-
-        local instaID   = cachedAssetIDs["MiscItems_Insta Plant Capsule"]
-        local diamondID = cachedAssetIDs["Seeds_Diamond"]
-
-        if not instaID and not diamondID then
-            print("[Inventory] Asset IDs not ready yet")
-            return 0, 0
-        end
 
         local ok, err = pcall(function()
             local content = LocalPlayer.PlayerGui
@@ -280,25 +278,23 @@ else
             for i = 1, 6 do
                 local slot = content:FindFirstChild("Slot" .. i)
                 if not slot then continue end
-
                 local slotBtn  = slot:FindFirstChild("SlotButton")
                 if not slotBtn then continue end
                 local itemSlot = slotBtn:FindFirstChild("ItemSlot")
                 if not itemSlot then continue end
-
                 local iconObj = itemSlot:FindFirstChild("Icon")
                 local qtyObj  = itemSlot:FindFirstChild("Quantity")
                 if not iconObj or not qtyObj then continue end
 
                 local slotIconID = tostring(iconObj.Image):match("%d+") or ""
-                local qty        = parsePrice(qtyObj.Text)  -- handles x32.8k etc.
+                local qty        = parsePrice(qtyObj.Text)
 
-                if instaID   and slotIconID == instaID   then
-                    instaCount = instaCount + qty
-                    print(string.format("[Inventory] Slot%d = Insta Plant Capsule x%d", i, qty))
-                elseif diamondID and slotIconID == diamondID then
+                if slotIconID == ICON_DIAMOND_SEED then
                     diamondCount = diamondCount + qty
                     print(string.format("[Inventory] Slot%d = Diamond Seeds x%d", i, qty))
+                elseif slotIconID == ICON_INSTA_PLANT then
+                    instaCount = instaCount + qty
+                    print(string.format("[Inventory] Slot%d = Insta Plant x%d", i, qty))
                 end
             end
         end)
@@ -325,8 +321,8 @@ else
 
     -- ================================================================
     -- SERVER HOP
-    -- diamondCount < instaCount  →  buy Diamond Seeds first
-    -- otherwise                  →  buy Insta Plant first
+    -- diamondCount < instaCount  →  Diamond Seeds first
+    -- otherwise                  →  Insta Plant first
     -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
