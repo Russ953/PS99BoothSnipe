@@ -1,4 +1,4 @@
-print("v1.8")
+print("v1.9")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -8,8 +8,8 @@ local LocalPlayer = Players.LocalPlayer
 -- ON-SCREEN DEBUGGER
 -- ========================================================================
 local CoreGui = game:GetService("CoreGui")
-for _, gui in ipairs(CoreGui:GetChildren()) do 
-    if gui.Name == "AIDebugger" or gui.Name == "AutoScannerGui" then gui:Destroy() end 
+for _, gui in ipairs(CoreGui:GetChildren()) do
+    if gui.Name == "AIDebugger" or gui.Name == "AutoScannerGui" then gui:Destroy() end
 end
 
 local function updateDebug(msg)
@@ -55,7 +55,6 @@ local function getGems()
     return 0
 end
 
--- Wait up to 10 seconds for Gems to be > 0
 local waitCount = 0
 while getGems() == 0 and waitCount < 20 do
     task.wait(0.5)
@@ -87,7 +86,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ══════════════════════════════════════════
 -- GLOBAL BACKGROUND BAG OPENER
--- FIX: Argument is "SeedBag" not "Seed Bag"
 -- ══════════════════════════════════════════
 if _G.BoothSniperSettings.AutoOpenBags then
     task.spawn(function()
@@ -120,7 +118,7 @@ if currentGems < 100000 then
         TeleportService:Teleport(8737899170, LocalPlayer)
         return
     else
-        updateDebug("[AI] Gems < 100k! Activating Farm Mode in Current World...")
+        updateDebug("[AI] Gems < 100k! Activating Farm Mode...")
     end
 else
     if not isPlaza then
@@ -128,7 +126,7 @@ else
         TeleportService:Teleport(15502339080, LocalPlayer)
         return
     else
-        updateDebug("[AI] High Gems detected! Activating Booth Sniper...")
+        updateDebug("[AI] High Gems! Starting Booth Sniper...")
     end
 end
 
@@ -213,7 +211,6 @@ else
     local isScanning = true
     local isHopping = false
     local timeInServer = 0
-    local statusTimeout = 0
     local cachedAssetIDs = {}
     local seenItems = {}
     local addLog = function(msg, color) end
@@ -228,25 +225,23 @@ else
         return nil
     end
 
-    local function doServerHop(statusLabel)
+    local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
-        if _G.BoothSniperSettings.RandomJoin then
-            if statusLabel then statusLabel.Text = "🎲 Random Hopping..."; statusTimeout = os.time() + 5 end
-            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
-            local success, result = pcall(function() return game:HttpGet(url) end)
-            if success and result and result ~= "" then
-                local ok, data = pcall(function() return HttpService:JSONDecode(result) end)
-                if ok and data and data.data then
-                    local validServers = {}
-                    for _, server in ipairs(data.data) do
-                        if server.playing and server.maxPlayers and server.playing < server.maxPlayers and server.id ~= game.JobId then
-                            table.insert(validServers, server.id)
-                        end
+        updateDebug("🎲 Random Hopping...")
+        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
+        local success, result = pcall(function() return game:HttpGet(url) end)
+        if success and result and result ~= "" then
+            local ok, data = pcall(function() return HttpService:JSONDecode(result) end)
+            if ok and data and data.data then
+                local validServers = {}
+                for _, server in ipairs(data.data) do
+                    if server.playing and server.maxPlayers and server.playing < server.maxPlayers and server.id ~= game.JobId then
+                        table.insert(validServers, server.id)
                     end
-                    if #validServers > 0 then
-                        TeleportService:TeleportToPlaceInstance(game.PlaceId, validServers[math.random(1, #validServers)], LocalPlayer)
-                        task.wait(10)
-                    end
+                end
+                if #validServers > 0 then
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, validServers[math.random(1, #validServers)], LocalPlayer)
+                    task.wait(10)
                 end
             end
         end
@@ -281,7 +276,6 @@ else
 
     local function getCleanID(assetText) return assetText and tostring(assetText):match("%d+") or "" end
 
-    -- FIX: Restored full Caller table that the server validates
     local function purchaseItem(ownerID, itemGUID, amount)
         local args = {
             tonumber(ownerID),
@@ -307,7 +301,7 @@ else
         return success, response
     end
 
-    local function scanAllBooths(statusLabel)
+    local function scanAllBooths()
         if currentRunID ~= _G.BoothSniperRunID or isHopping then return end
         timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
 
@@ -355,12 +349,14 @@ else
 
                                             if buyAmount > 0 then
                                                 addLog(string.format("⌛ Buying %dx %s...", buyAmount, itemNameDisplay), Color3.fromRGB(200, 200, 100))
+                                                updateDebug(string.format("⌛ Buying %dx %s...", buyAmount, itemNameDisplay))
                                                 task.spawn(function()
                                                     local startGems = getGems()
                                                     local success, response = purchaseItem(ownerID, guid, buyAmount)
                                                     task.wait(0.5)
                                                     if success and (response == true or getGems() < startGems) then
                                                         addLog(string.format("✅ Bought %s!", itemNameDisplay), Color3.fromRGB(100, 255, 130))
+                                                        updateDebug(string.format("✅ Bought %s!", itemNameDisplay))
                                                     else
                                                         seenItems[guid] = nil
                                                     end
@@ -380,18 +376,18 @@ else
 
         if _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
             isHopping = true
-            task.spawn(function() doServerHop(statusLabel) end)
-            return
+            task.spawn(doServerHop)
         end
     end
 
+    -- GUI (optional, log only)
     if _G.BoothSniperSettings.ShowGUI then
         local ScreenGui = Instance.new("ScreenGui", CoreGui)
         ScreenGui.Name = "AutoScannerGui"
 
         local Frame = Instance.new("Frame", ScreenGui)
-        Frame.Size = UDim2.new(0, 320, 0, 240)
-        Frame.Position = UDim2.new(0.5, -160, 0.5, -120)
+        Frame.Size = UDim2.new(0, 320, 0, 200)
+        Frame.Position = UDim2.new(0.5, -160, 0.5, -100)
         Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
         Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 8)
 
@@ -417,15 +413,16 @@ else
             lbl.TextXAlignment = Enum.TextXAlignment.Left
             task.spawn(function() task.wait(0.05) LogFrame.CanvasPosition = Vector2.new(0, LogList.AbsoluteContentSize.Y) end)
         end
-
-        task.spawn(function()
-            while isScanning do
-                if currentRunID ~= _G.BoothSniperRunID then break end
-                pcall(function() scanAllBooths(nil) end)
-                task.wait(_G.BoothSniperSettings.ScanDelay)
-            end
-        end)
     end
+
+    -- !! SCAN LOOP IS NOW OUTSIDE GUI BLOCK - ALWAYS RUNS !!
+    task.spawn(function()
+        while isScanning do
+            if currentRunID ~= _G.BoothSniperRunID then break end
+            pcall(scanAllBooths)
+            task.wait(_G.BoothSniperSettings.ScanDelay)
+        end
+    end)
 end
 
 -- ══════════════════════════════════════════
