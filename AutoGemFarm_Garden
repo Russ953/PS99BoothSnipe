@@ -1,4 +1,4 @@
-print("v1.4")
+print("v1.5")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -70,22 +70,25 @@ for _, gui in ipairs(CoreGui:GetChildren()) do if gui.Name == "AutoScannerGui" t
 if PlayerGui then for _, gui in ipairs(PlayerGui:GetChildren()) do if gui.Name == "AutoScannerGui" then gui:Destroy() end end end
 
 -- ══════════════════════════════════════════
--- GLOBAL BACKGROUND BAG OPENER 
+-- GLOBAL BACKGROUND BAG OPENER (FIXED)
 -- ══════════════════════════════════════════
 if _G.BoothSniperSettings.AutoOpenBags then
     task.spawn(function()
-        print("[AI] Global Bag Opener Started!")
-        while task.wait(0.05) do
-            if currentRunID ~= _G.BoothSniperRunID then break end
-            task.spawn(function()
-                pcall(function() 
-                    local network = ReplicatedStorage:FindFirstChild("Network")
-                    if network then
-                        local bagRemote = network:FindFirstChild("GiftBag_Open")
-                        if bagRemote then bagRemote:InvokeServer("Seed Bag", 100) end
-                    end
+        local network = ReplicatedStorage:WaitForChild("Network", 30)
+        local bagRemote = network and network:WaitForChild("GiftBag_Open", 30)
+        
+        if bagRemote then
+            print("[AI] Global Bag Opener Started & Remote Found!")
+            while task.wait(0.01) do
+                if currentRunID ~= _G.BoothSniperRunID then break end
+                task.spawn(function()
+                    pcall(function() 
+                        bagRemote:InvokeServer("Seed Bag", 100) 
+                    end)
                 end)
-            end)
+            end
+        else
+            warn("[AI] Could not find GiftBag_Open remote!")
         end
     end)
 end
@@ -253,7 +256,6 @@ else
             local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
             local success, result = pcall(function() return game:HttpGet(url) end)
             
-            -- FIX FOR THE JSON ERROR
             if success and result and result ~= "" then
                 local decodeSuccess, data = pcall(function() return HttpService:JSONDecode(result) end)
                 if decodeSuccess and data and data.data then
