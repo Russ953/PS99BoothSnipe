@@ -1,4 +1,4 @@
-print("v1.2")
+print("v1.3")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 -- ══════════════════════════════════════════
@@ -11,7 +11,7 @@ if not _G.BoothSniperSettings then
         ShowGUI = true, ScanDelay = 0.5, AutoHop = true, 
         TerminalSearch = true, RandomJoin = true, HopDelay = 5, 
         AutoExecute = true, 
-        AutoOpenBags = true, -- NEW: Opens bags globally in the background
+        AutoOpenBags = true, 
         Items = {} 
     }
 end
@@ -36,20 +36,49 @@ for _, gui in ipairs(CoreGui:GetChildren()) do if gui.Name == "AutoScannerGui" t
 if PlayerGui then for _, gui in ipairs(PlayerGui:GetChildren()) do if gui.Name == "AutoScannerGui" then gui:Destroy() end end end
 
 -- ══════════════════════════════════════════
--- GLOBAL BACKGROUND BAG OPENER (ULTRA FAST)
+-- MATH & GEM UTILS (MOVED TO TOP TO FIX ROUTER)
+-- ══════════════════════════════════════════
+local function parsePrice(text)
+    if type(text) ~= "string" then return tonumber(text) or 0 end
+    text = text:lower():gsub(",", ""):gsub(" ", "")
+    for suffix, mult in pairs({ t = 1e12, b = 1e9, m = 1e6, k = 1e3 }) do
+        local num = text:match("([%d%.]+)" .. suffix)
+        if num then return tonumber(num) * mult end
+    end
+    return tonumber(text:match("([%d%.]+)")) or 0
+end
+
+local function getGems()
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    if ls then
+        -- Exactly matches PS99 Diamond formats
+        local stat = ls:FindFirstChild("\240\159\146\142 Diamonds") or ls:FindFirstChild("💎 Diamonds") or ls:FindFirstChild("Diamonds")
+        if stat then
+            return parsePrice(tostring(stat.Value))
+        end
+    end
+    return 0
+end
+
+-- ══════════════════════════════════════════
+-- GLOBAL BACKGROUND BAG OPENER 
 -- ══════════════════════════════════════════
 if _G.BoothSniperSettings.AutoOpenBags then
     task.spawn(function()
-        local network = ReplicatedStorage:WaitForChild("Network", 10)
-        local bagRemote = network and network:WaitForChild("GiftBag_Open", 10)
-        if bagRemote then
-            print("[AI] Global Bag Opener Started! Opening bags in the background...")
-            while task.wait(0.01) do
-                if currentRunID ~= _G.BoothSniperRunID then break end -- Stops if you re-execute
-                task.spawn(function()
-                    pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
+        print("[AI] Global Bag Opener Started! Opening bags in the background...")
+        while task.wait(0.05) do
+            if currentRunID ~= _G.BoothSniperRunID then break end
+            task.spawn(function()
+                pcall(function() 
+                    local network = ReplicatedStorage:FindFirstChild("Network")
+                    if network then
+                        local bagRemote = network:FindFirstChild("GiftBag_Open")
+                        if bagRemote then
+                            bagRemote:InvokeServer("Seed Bag", 100) 
+                        end
+                    end
                 end)
-            end
+            end)
         end
     end)
 end
@@ -75,20 +104,11 @@ if _G.BoothSniperSettings.AutoExecute and queue_on_teleport and not _G.BoothSnip
 end
 
 -- ══════════════════════════════════════════
--- GAME IDs & UTILS
+-- GAME IDs & HOP LOGIC
 -- ══════════════════════════════════════════
 local MAIN_GAME_ID = 8737899170
 local PLAZA_ID = 15502339080
 local PLACE_ID = game.PlaceId
-
-local function getGems()
-    local ls = LocalPlayer:FindFirstChild("leaderstats")
-    if not ls then return 0 end
-    for _, stat in ipairs(ls:GetChildren()) do
-        if stat.Name:match("Diamonds") or stat.Name:match("💎") then return tonumber(stat.Value) or 0 end
-    end
-    return 0
-end
 
 local function extractJobId(tbl)
     if type(tbl) == "string" and #tbl == 36 and tbl:match("%w+-%w+-%w+-%w+-%w+") then return tbl
@@ -104,6 +124,8 @@ end
 -- MASTER ROUTER: Where should we be?
 -- ══════════════════════════════════════════
 local currentGems = getGems()
+print(string.format("[AI] Router Check -> Gems: %d | PlaceID: %d", currentGems, PLACE_ID))
+
 if currentGems < 100000 and PLACE_ID ~= MAIN_GAME_ID then
     print("[AI] Low gems detected (<100k). Teleporting to Main Game to farm!")
     TeleportService:Teleport(MAIN_GAME_ID, LocalPlayer)
@@ -122,32 +144,34 @@ if PLACE_ID == MAIN_GAME_ID then
     
     local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
     local rootPart = character:WaitForChild("HumanoidRootPart")
-    local network = ReplicatedStorage:WaitForChild("Network")
-    local invokeRemote = network:WaitForChild("Instancing_InvokeCustomFromClient")
-    local fireRemote = network:WaitForChild("Instancing_FireCustomFromClient")
-    local bagRemote = network:WaitForChild("GiftBag_Open")
     
-    -- 1. Enter the portal
-    local enterTeleport = workspace:WaitForChild("__THINGS"):WaitForChild("Instances"):WaitForChild("FlowerGarden"):WaitForChild("Teleports"):WaitForChild("Enter")
-    rootPart.CFrame = enterTeleport.CFrame
-    if firetouchinterest then
-        firetouchinterest(rootPart, enterTeleport, 0)
-        task.wait(0.1)
-        firetouchinterest(rootPart, enterTeleport, 1)
+    -- Safely navigate to the portal
+    local things = workspace:WaitForChild("__THINGS", 15)
+    local enterTeleport = things and things:WaitForChild("Instances", 10):WaitForChild("FlowerGarden", 10):WaitForChild("Teleports", 10):WaitForChild("Enter", 10)
+    
+    if enterTeleport then
+        rootPart.CFrame = enterTeleport.CFrame
+        if firetouchinterest then
+            firetouchinterest(rootPart, enterTeleport, 0)
+            task.wait(0.1)
+            firetouchinterest(rootPart, enterTeleport, 1)
+        end
     end
     
-    -- 2. Wait for Instance to load & TP to plants
-    local activeInstances = workspace:WaitForChild("__THINGS"):WaitForChild("__INSTANCE_CONTAINER"):WaitForChild("Active")
+    -- Wait for Instance to load & TP to plants
+    local activeInstances = things:WaitForChild("__INSTANCE_CONTAINER", 10):WaitForChild("Active", 10)
     local flowerGarden = activeInstances:WaitForChild("FlowerGarden", 15)
     
     if flowerGarden then
         local plant1 = flowerGarden:WaitForChild("Plants"):WaitForChild("Plant1")
-        -- FIX: Models use GetPivot() instead of .CFrame
         rootPart.CFrame = plant1:GetPivot() + Vector3.new(0, 5, 0)
         
         local isFarming = true
+        local network = ReplicatedStorage:WaitForChild("Network")
+        local invokeRemote = network:WaitForChild("Instancing_InvokeCustomFromClient")
+        local fireRemote = network:WaitForChild("Instancing_FireCustomFromClient")
         
-        -- 3A. Plant/Grow/Claim Loop
+        -- Plant/Grow/Claim Loop
         task.spawn(function()
             while isFarming do
                 for i = 1, 10 do
@@ -163,19 +187,7 @@ if PLACE_ID == MAIN_GAME_ID then
             end
         end)
         
-        -- 3B. Open Seed Bags Loop (Only runs here if Global is OFF)
-        if not _G.BoothSniperSettings.AutoOpenBags then
-            task.spawn(function()
-                while isFarming do
-                    task.spawn(function()
-                        pcall(function() bagRemote:InvokeServer("Seed Bag", 100) end)
-                    end)
-                    task.wait(0.01)
-                end
-            end)
-        end
-        
-        -- 3C. The 10-Second Deadlock Tracker
+        -- The 10-Second Deadlock Tracker
         task.spawn(function()
             local timeStuck = 0
             local lastGemsCheck = getGems()
@@ -197,7 +209,6 @@ if PLACE_ID == MAIN_GAME_ID then
             end
         end)
         
-        -- Simple UI to let you know it's working
         local sg = Instance.new("ScreenGui", CoreGui)
         local tl = Instance.new("TextLabel", sg)
         tl.Size = UDim2.new(0, 300, 0, 50)
@@ -305,15 +316,6 @@ else
     end
 
     local function getCleanID(assetText) return assetText and tostring(assetText):match("%d+") or "" end
-    local function parsePrice(text)
-        if type(text) ~= "string" then return 0 end
-        text = text:lower():gsub(",", ""):gsub(" ", "")
-        for suffix, mult in pairs({ t = 1e12, b = 1e9, m = 1e6, k = 1e3 }) do
-            local num = text:match("([%d%.]+)" .. suffix)
-            if num then return tonumber(num) * mult end
-        end
-        return tonumber(text:match("([%d%.]+)")) or 0
-    end
 
     local function purchaseItem(ownerID, itemGUID, amount)
         local args = { tonumber(ownerID), { [tostring(itemGUID)] = tonumber(amount) }, { Caller = { LineNumber = 527, ScriptClass = "ModuleScript", Variadic = false, Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157", ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds", FunctionName = "PromptPurchase2", Handle = "function: 0xfa15618739cde075", ScriptType = "Instance", ParameterCount = 2, SourceIdentifier = "ReplicatedStorage.Library.Client.BoothCmds" } } }
@@ -327,7 +329,6 @@ else
         
         local myGems = getGems()
         
-        -- DRAIN TRIGGER: Go back to farm!
         if myGems < 100000 then
             isScanning = false
             if statusLabel then statusLabel.Text = "💸 Gems drained! TPing to Farm..." end
