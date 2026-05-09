@@ -1,4 +1,4 @@
-print("v3.2")
+print("v3.3")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -98,14 +98,14 @@ end
 updateDebug(string.format("[AI] Loaded! Gems: %d", getGems()))
 
 -- ========================================================================
--- HARDCODED ICON IDs (verified from in-game hotbar debug)
+-- HARDCODED ICON IDs
 -- ========================================================================
-local ICON_DIAMOND_SEED  = "15554896030"   -- Slot 1
-local ICON_INSTA_PLANT   = "15554896248"   -- Slot 2
-local ICON_SEED_BAG      = "15554896174"   -- Slot 3
+local ICON_DIAMOND_SEED = "15554896030"
+local ICON_INSTA_PLANT  = "15554896248"
+local ICON_SEED_BAG     = "15554896174"
 
 -- ══════════════════════════════════════════
--- SETTINGS  — AssetID hardcoded, no API fetch needed
+-- SETTINGS
 -- ══════════════════════════════════════════
 _G.BoothSniperServerHopLoaded = true
 
@@ -137,7 +137,6 @@ if not _G.BoothSniperSettings then
     }
 end
 
--- Patch AssetIDs in case settings were loaded from queue (JSON loses the variable refs)
 for _, t in ipairs(_G.BoothSniperSettings.Items) do
     if t.Priority == "insta"   and not t.AssetID then t.AssetID = ICON_INSTA_PLANT end
     if t.Priority == "diamond" and not t.AssetID then t.AssetID = ICON_DIAMOND_SEED end
@@ -202,6 +201,34 @@ if not isPlaza then
         local network = ReplicatedStorage:WaitForChild("Network")
         local invokeRemote = network:WaitForChild("Instancing_InvokeCustomFromClient")
         local fireRemote   = network:WaitForChild("Instancing_FireCustomFromClient")
+
+        -- ================================================================
+        -- ORB COLLECTOR — moves orb parts to player so client physics
+        -- marks them _collected and auto-fires Orbs: Collect
+        -- ================================================================
+        task.spawn(function()
+            print("[OrbCollector] Started")
+            while isFarming do
+                local orbsFolder = things:FindFirstChild("Orbs")
+                if orbsFolder then
+                    for _, orb in ipairs(orbsFolder:GetChildren()) do
+                        local part = orb:IsA("BasePart") and orb
+                            or orb:FindFirstChildWhichIsA("BasePart")
+                        if part then
+                            pcall(function()
+                                part.CFrame = rootPart.CFrame
+                            end)
+                        end
+                    end
+                end
+                task.wait(0.05)
+            end
+            print("[OrbCollector] Stopped")
+        end)
+
+        -- ================================================================
+        -- PLANT LOOP
+        -- ================================================================
         task.spawn(function()
             while isFarming do
                 for i = 1, 10 do
@@ -218,6 +245,10 @@ if not isPlaza then
                 task.wait(0.1)
             end
         end)
+
+        -- ================================================================
+        -- GEM MONITOR
+        -- ================================================================
         task.spawn(function()
             local timeStuck = 0
             local lastGemsCheck = getGems()
@@ -225,8 +256,12 @@ if not isPlaza then
                 task.wait(1)
                 local checkGems = getGems()
                 updateDebug(string.format("🌸 Farming | Gems: %d | Stuck: %ds", checkGems, timeStuck))
-                if checkGems > lastGemsCheck then timeStuck = 0; lastGemsCheck = checkGems
-                else timeStuck = timeStuck + 1 end
+                if checkGems > lastGemsCheck then
+                    timeStuck = 0
+                    lastGemsCheck = checkGems
+                else
+                    timeStuck = timeStuck + 1
+                end
                 if timeStuck >= 10 and checkGems >= 100000 then
                     isFarming = false
                     updateDebug("[AI] Goal Reached! Teleporting to Plaza...")
@@ -248,9 +283,6 @@ else
     local seenItems    = {}
     local addLog = function(msg, color) end
 
-    -- ================================================================
-    -- INVENTORY COUNT — hotbar Slot1-6, hardcoded icon IDs
-    -- ================================================================
     local function getInventoryCounts()
         local instaCount   = 0
         local diamondCount = 0
@@ -285,9 +317,6 @@ else
         return instaCount, diamondCount
     end
 
-    -- ================================================================
-    -- TERMINAL SEARCH
-    -- ================================================================
     local function terminalSearch(termClass, termId)
         local Network = ReplicatedStorage:FindFirstChild("Network")
         if not Network then return nil end
@@ -300,15 +329,10 @@ else
         return result.job_id and result or nil
     end
 
-    -- ================================================================
-    -- SERVER HOP
-    -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
-
         if _G.BoothSniperSettings.TerminalSearch then
             local instaCount, diamondCount = getInventoryCounts()
-
             local instaItem, diamondItem, otherItems = nil, nil, {}
             for _, t in ipairs(_G.BoothSniperSettings.Items) do
                 if     t.Priority == "insta"   then instaItem   = t
@@ -316,7 +340,6 @@ else
                 else   table.insert(otherItems, t)
                 end
             end
-
             local searchOrder = {}
             if diamondCount < instaCount then
                 print(string.format("[Priority] diamonds(%d) < insta(%d) → Diamond Seeds first", diamondCount, instaCount))
@@ -328,7 +351,6 @@ else
                 if diamondItem then table.insert(searchOrder, diamondItem) end
             end
             for _, t in ipairs(otherItems) do table.insert(searchOrder, t) end
-
             for _, target in ipairs(searchOrder) do
                 if not target.ItemName then continue end
                 local termClass = target.TerminalClass or "Misc"
@@ -346,7 +368,6 @@ else
             end
             updateDebug("⚠️ Terminal: no results, random hopping...")
         end
-
         if _G.BoothSniperSettings.RandomJoin then
             updateDebug("🎲 Random Hopping...")
             local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
@@ -404,17 +425,14 @@ else
         local myGems = getGems()
         updateDebug(string.format("🎯 Sniping | Gems: %d | Hop In: %ds",
             myGems, math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5) - timeInServer))))
-
         if myGems < 100000 then
             isScanning = false
             alertDebug("💸 Gems drained! Going to Farm...", 5)
             TeleportService:Teleport(8737899170, LocalPlayer)
             return
         end
-
         local boothsFolder = workspace:FindFirstChild("__THINGS") and workspace.__THINGS:FindFirstChild("Booths")
         if not boothsFolder then return end
-
         for _, booth in ipairs(boothsFolder:GetChildren()) do
             local ownerID = booth:GetAttribute("Owner")
             if not ownerID or ownerID == LocalPlayer.UserId then continue end
@@ -435,8 +453,8 @@ else
                     if cleanFoundID ~= getCleanID(target.AssetID) then continue end
                     local costLabel = itemBox:FindFirstChild("Buy") and itemBox.Buy:FindFirstChild("Cost")
                     if not (costLabel and costLabel:IsA("TextLabel")) then continue end
-                    local pricePerItem   = parsePrice(costLabel.Text)
-                    local maxPrice       = target.MaxPrice or math.huge
+                    local pricePerItem    = parsePrice(costLabel.Text)
+                    local maxPrice        = target.MaxPrice or math.huge
                     local itemNameDisplay = target.ItemName or target.AssetID
                     if seenItems[guid] then continue end
                     seenItems[guid] = true
@@ -465,7 +483,6 @@ else
                 end
             end
         end
-
         if _G.BoothSniperSettings.AutoHop and timeInServer >= (_G.BoothSniperSettings.HopDelay or 5) then
             isHopping = true
             task.spawn(doServerHop)
