@@ -1,4 +1,4 @@
-print("v3.5")
+print("v3.6")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -270,9 +270,6 @@ else
     local timeInServer = 0
     local seenItems    = {}
 
-    -- ================================================================
-    -- INVENTORY COUNT
-    -- ================================================================
     local function getInventoryCounts()
         local instaCount   = 0
         local diamondCount = 0
@@ -306,37 +303,31 @@ else
     end
 
     -- ================================================================
-    -- BUY AMOUNT — hard capped to keep insta/diamond balanced
-    -- Rules:
-    --   insta:   only buy up to (diamondCount - instaCount), skip if insta >= diamond
-    --   diamond: only buy up to (instaCount - diamondCount), skip if diamond >= insta
-    --   other:   buy normally up to stock/gems
+    -- BUY AMOUNT
+    --   insta:   ALWAYS buy all affordable/available — no cap
+    --   diamond: only buy up to deficit (instaCount - diamondCount)
+    --            skip entirely if diamondCount >= instaCount
+    --   other:   buy normally
     -- ================================================================
     local function calcBuyAmount(target, instaCount, diamondCount, stockAvailable, myGems, pricePerItem)
         local affordable = math.floor(myGems / pricePerItem)
         local base = math.min(stockAvailable, affordable)
 
         if target.Priority == "insta" then
-            if instaCount >= diamondCount then
-                return 0  -- already have enough insta, skip
-            end
-            local deficit = diamondCount - instaCount
-            return math.min(base, deficit)
+            -- No cap — always buy everything available
+            return base
 
         elseif target.Priority == "diamond" then
             if diamondCount >= instaCount then
-                return 0  -- already have enough diamonds, skip
+                return 0  -- already have enough, skip
             end
             local deficit = instaCount - diamondCount
             return math.min(base, deficit)
         end
 
-        return base  -- no priority (Seed Bag etc), buy normally
+        return base  -- Seed Bag etc — buy normally
     end
 
-    -- ================================================================
-    -- TERMINAL SEARCH
-    -- ================================================================
     local function terminalSearch(termClass, termId)
         local Network = ReplicatedStorage:FindFirstChild("Network")
         if not Network then return nil end
@@ -349,16 +340,11 @@ else
         return result.job_id and result or nil
     end
 
-    -- ================================================================
-    -- SERVER HOP
     -- Hop order: insta → seed bag → diamond (only if deficit)
-    -- ================================================================
     local function doServerHop()
         if currentRunID ~= _G.BoothSniperRunID then return end
         if _G.BoothSniperSettings.TerminalSearch then
             local instaCount, diamondCount = getInventoryCounts()
-            print(string.format("[Hop] Insta: %d | Diamond: %d", instaCount, diamondCount))
-
             local instaItem, diamondItem, otherItems = nil, nil, {}
             for _, t in ipairs(_G.BoothSniperSettings.Items) do
                 if     t.Priority == "insta"   then instaItem   = t
@@ -366,15 +352,12 @@ else
                 else   table.insert(otherItems, t)
                 end
             end
-
-            -- Build hop order: insta first, then others (seed bag), diamond only if deficit
             local searchOrder = {}
             if instaItem then table.insert(searchOrder, instaItem) end
             for _, t in ipairs(otherItems) do table.insert(searchOrder, t) end
             if diamondItem and diamondCount < instaCount then
                 table.insert(searchOrder, diamondItem)
             end
-
             for _, target in ipairs(searchOrder) do
                 if not target.ItemName then continue end
                 local termClass = target.TerminalClass or "Misc"
@@ -443,9 +426,6 @@ else
         return success, response
     end
 
-    -- ================================================================
-    -- BOOTH SCAN
-    -- ================================================================
     local function scanAllBooths()
         if currentRunID ~= _G.BoothSniperRunID or isHopping then return end
         timeInServer = timeInServer + _G.BoothSniperSettings.ScanDelay
@@ -498,9 +478,8 @@ else
                     local buyAmount = calcBuyAmount(target, instaCount, diamondCount, stockAvailable, myGems, pricePerItem)
 
                     if buyAmount <= 0 then
-                        -- only show skip msg for priority items, not every scan
-                        if target.Priority then
-                            alertDebug(string.format("⚖️ SKIP %s | insta=%d diamond=%d", itemNameDisplay, instaCount, diamondCount), 2)
+                        if target.Priority == "diamond" then
+                            alertDebug(string.format("⚖️ SKIP Diamond | diamonds(%d) >= insta(%d)", diamondCount, instaCount), 2)
                         end
                         seenItems[guid] = true
                         continue
