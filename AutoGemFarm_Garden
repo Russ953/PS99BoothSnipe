@@ -1,4 +1,4 @@
-print("v3.8")
+print("v3.9")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players           = game:GetService("Players")
@@ -53,7 +53,7 @@ local function alertDebug(msg, secs)
     print(msg)
 end
 
-updateDebug("[v3.8] Waiting for data...")
+updateDebug("[v3.9] Waiting for data...")
 
 -- ========================================================================
 -- PARSER / GEMS
@@ -83,7 +83,7 @@ local waitCount = 0
 while getGems() == 0 and waitCount < 20 do
     task.wait(0.5); waitCount += 1
 end
-updateDebug(string.format("[v3.8] Loaded! Gems: %d", getGems()))
+updateDebug(string.format("[v3.9] Loaded! Gems: %d", getGems()))
 
 -- ========================================================================
 -- ICON IDs
@@ -116,6 +116,12 @@ end
 _G.BoothSniperRunID = (_G.BoothSniperRunID or 0) + 1
 local currentRunID = _G.BoothSniperRunID
 local WEBHOOK      = _G.BoothSniperSettings.DiscordWebhook or ""
+
+-- pre-compute: does the user have a diamond item configured?
+local hasDiamondItemInSettings = false
+for _, t in ipairs(_G.BoothSniperSettings.Items) do
+    if t.Priority == "diamond" then hasDiamondItemInSettings = true break end
+end
 
 -- ========================================================================
 -- SHARED FILE HELPERS
@@ -197,7 +203,6 @@ local function updateMyStatus(status, gems, insta, diamond)
     local list = safeReadJSON(STATUS_FILE)
     local now  = os.time()
     local out  = {}
-    -- clean stale, remove my old entry
     for _, e in ipairs(list) do
         if type(e)=="table" and e.name and e.name ~= MY_NAME
             and (now-(e.ts or 0)) < STALE_SECS then
@@ -239,7 +244,7 @@ local function buildFleetEmbed(accounts)
         local age    = now - (acc.ts or 0)
         local online = age < STALE_SECS
         if online then onlineCount += 1 end
-        local dot    = online and "🟢" or "🔴"
+        local dot = online and "🟢" or "🔴"
         table.insert(fields, {
             name  = dot.." "..tostring(acc.name or "?"),
             value = online
@@ -261,7 +266,7 @@ local function buildFleetEmbed(accounts)
             title  = "🌸 PS99 Booth Sniper Fleet",
             color  = 0x64FF96,
             fields = fields,
-            footer = { text = string.format("v3.8 • %d online • Updated %s",
+            footer = { text = string.format("v3.9 • %d online • Updated %s",
                 onlineCount, os.date("%H:%M:%S")) }
         }}
     }
@@ -275,11 +280,10 @@ local function pushWebhook(accounts)
     task.spawn(function()
         local reqFunc = getReqFunc()
         if not reqFunc then webhookBusy=false return end
-        local body = buildFleetEmbed(accounts)
+        local body  = buildFleetEmbed(accounts)
         local msgId = fileExists(MSGID_FILE) and safeReadText(MSGID_FILE) or ""
-        msgId = msgId:match("^%s*(.-)%s*$")  -- trim whitespace
+        msgId = msgId:match("^%s*(.-)%s*$")
         if msgId ~= "" then
-            -- PATCH existing shared message
             pcall(function()
                 reqFunc({
                     Url     = WEBHOOK.."/messages/"..msgId,
@@ -289,7 +293,6 @@ local function pushWebhook(accounts)
                 })
             end)
         else
-            -- POST once, save message ID for all accounts
             pcall(function()
                 local res = reqFunc({
                     Url     = WEBHOOK.."?wait=true",
@@ -309,7 +312,6 @@ local function pushWebhook(accounts)
     end)
 end
 
--- throttled wrapper — never fires more than once per 15s
 local lastWebhookPush = 0
 local function scheduleWebhook(status, gems, insta, diamond)
     if WEBHOOK == "" then return end
@@ -322,10 +324,10 @@ local function scheduleWebhook(status, gems, insta, diamond)
 end
 
 -- ========================================================================
--- WAIT FOR INVENTORY BEFORE FIRST WEBHOOK
+-- WAIT FOR INVENTORY
 -- ========================================================================
 local function waitForInventory()
-    local deadline = os.clock() + 20  -- max 20s wait
+    local deadline = os.clock() + 20
     while os.clock() < deadline do
         local ok = pcall(function()
             local content = LocalPlayer.PlayerGui
@@ -351,14 +353,14 @@ local currentGems = getGems()
 
 if currentGems < 100000 then
     if isPlaza then
-        updateDebug("[v3.8] Gems < 100k → Farming...")
+        updateDebug("[v3.9] Gems < 100k → Farming...")
         removeSelf(); removeMyStatus()
         TeleportService:Teleport(8737899170, LocalPlayer)
         return
     end
 else
     if not isPlaza then
-        updateDebug("[v3.8] Gems ready → Plaza...")
+        updateDebug("[v3.9] Gems ready → Plaza...")
         removeSelf(); removeMyStatus()
         TeleportService:Teleport(15502339080, LocalPlayer)
         return
@@ -372,7 +374,7 @@ if not isPlaza then
     local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
     local rootPart  = character:WaitForChild("HumanoidRootPart")
     local things    = workspace:WaitForChild("__THINGS",15)
-    if not things then warn("[v3.8] __THINGS not found") return end
+    if not things then warn("[v3.9] __THINGS not found") return end
 
     local enterTP = things:WaitForChild("Instances",10)
         :WaitForChild("FlowerGarden",10):WaitForChild("Teleports",10):WaitForChild("Enter",10)
@@ -385,14 +387,14 @@ if not isPlaza then
 
     local active       = things:WaitForChild("__INSTANCE_CONTAINER",10):WaitForChild("Active",10)
     local flowerGarden = active:WaitForChild("FlowerGarden",15)
-    if not flowerGarden then updateDebug("[v3.8] FlowerGarden not found") return end
+    if not flowerGarden then updateDebug("[v3.9] FlowerGarden not found") return end
 
-    local plant1   = flowerGarden:WaitForChild("Plants"):WaitForChild("Plant1")
-    rootPart.CFrame= plant1:GetPivot()+Vector3.new(0,5,0)
-    local isFarming= true
-    local network  = ReplicatedStorage:WaitForChild("Network")
-    local invRemote= network:WaitForChild("Instancing_InvokeCustomFromClient")
-    local fireRmte = network:WaitForChild("Instancing_FireCustomFromClient")
+    local plant1    = flowerGarden:WaitForChild("Plants"):WaitForChild("Plant1")
+    rootPart.CFrame = plant1:GetPivot()+Vector3.new(0,5,0)
+    local isFarming = true
+    local network   = ReplicatedStorage:WaitForChild("Network")
+    local invRemote = network:WaitForChild("Instancing_InvokeCustomFromClient")
+    local fireRmte  = network:WaitForChild("Instancing_FireCustomFromClient")
 
     task.spawn(function()
         while isFarming do
@@ -432,7 +434,7 @@ if not isPlaza then
             if stuck >= 10 and g >= 100000 then
                 isFarming = false
                 removeSelf(); removeMyStatus()
-                updateDebug("[v3.8] Goal reached! → Plaza")
+                updateDebug("[v3.9] Goal reached! → Plaza")
                 TeleportService:Teleport(15502339080, LocalPlayer)
             end
         end
@@ -447,7 +449,7 @@ else
     local timeInServer = 0
     local seenItems    = {}
 
-    -- inventory reader
+    -- ── INVENTORY (always fresh read) ────────────────────────────────
     local function getInventoryCounts()
         local insta, diamond = 0, 0
         pcall(function()
@@ -462,22 +464,50 @@ else
                 if not (icon and qty) then continue end
                 local id = tostring(icon.Image):match("%d+") or ""
                 local q  = parsePrice(qty.Text)
-                if id == ICON_DIAMOND_SEED then diamond += q
-                elseif id == ICON_INSTA_PLANT then insta += q
+                if id == ICON_DIAMOND_SEED  then diamond += q
+                elseif id == ICON_INSTA_PLANT then insta  += q
                 end
             end
         end)
         return insta, diamond
     end
 
-    local function calcBuyAmount(target, insta, diamond, stock, gems, price)
-        local base = math.min(stock, math.floor(gems/price))
-        if target.Priority=="insta"   then return base end
-        if target.Priority=="diamond" then
-            if diamond >= insta then return 0 end
-            return math.min(base, insta-diamond)
+    -- ── BUY AMOUNT ────────────────────────────────────────────────────
+    -- Rules:
+    --   insta:   only buy if diamond >= 1 OR no diamond item in settings
+    --            if allowed, buy all affordable (no cap)
+    --   diamond: only buy deficit (insta - diamond); skip if diamond >= insta AND insta > 0
+    --   other:   buy normally
+    -- Counts are ALWAYS read fresh here, never reused from scan-top.
+    local function calcBuyAmount(target, stock, gems, price)
+        local base = math.min(stock, math.floor(gems / price))
+        if base <= 0 then return 0 end
+
+        -- fresh inventory read every decision
+        local insta, diamond = getInventoryCounts()
+
+        if target.Priority == "insta" then
+            -- block insta if diamond item is configured but we have 0 diamonds
+            if hasDiamondItemInSettings and diamond <= 0 then
+                alertDebug("⛔ SKIP Insta — no Diamond Seeds yet", 2)
+                return 0
+            end
+            return base  -- no cap, buy everything affordable
+
+        elseif target.Priority == "diamond" then
+            -- only fill up to insta count
+            if insta <= 0 then
+                -- no insta plants at all — still allow buying diamonds freely
+                return base
+            end
+            if diamond >= insta then
+                alertDebug(string.format("⚖️ SKIP Diamond | 🔷%d >= 🌱%d", diamond, insta), 2)
+                return 0
+            end
+            return math.min(base, insta - diamond)
         end
-        return base
+
+        return base  -- seed bag or anything else
     end
 
     local function terminalSearch(termClass, termId)
@@ -585,7 +615,6 @@ else
             myGems, insta, diamond,
             math.max(0, math.floor((_G.BoothSniperSettings.HopDelay or 5)-timeInServer))))
 
-        -- throttled status push
         scheduleWebhook("🎯 Sniping", myGems, insta, diamond)
 
         if myGems < 100000 then
@@ -618,6 +647,7 @@ else
 
                 local cleanID = getCleanID(iconLabel.Image)
                 local guid    = itemBox.Name
+
                 for _, target in ipairs(_G.BoothSniperSettings.Items) do
                     if not target.AssetID then continue end
                     if cleanID ~= getCleanID(target.AssetID) then continue end
@@ -628,16 +658,13 @@ else
                     local maxP  = target.MaxPrice or math.huge
                     local name  = target.ItemName or target.AssetID
                     if seenItems[guid] then continue end
-
                     if price > maxP then seenItems[guid]=true; continue end
 
                     local stock  = tonumber(itemBox:GetAttribute("Quantity")) or 1
-                    local buyAmt = calcBuyAmount(target, insta, diamond, stock, myGems, price)
+                    -- calcBuyAmount does its own fresh inventory read internally
+                    local buyAmt = calcBuyAmount(target, stock, myGems, price)
 
                     if buyAmt <= 0 then
-                        if target.Priority=="diamond" then
-                            alertDebug(string.format("⚖️ SKIP Diamond | 🔷%d >= 🌱%d", diamond, insta), 2)
-                        end
                         seenItems[guid]=true; continue
                     end
 
@@ -649,12 +676,10 @@ else
                         local ok, resp  = purchaseItem(ownerID, guid, buyAmt)
                         task.wait(0.5)
                         if ok and (resp==true or getGems()<startGems) then
+                            local newInsta, newDiamond = getInventoryCounts()
                             alertDebug(string.format("✅ BOUGHT %s x%d @ %s", name, buyAmt, costLabel.Text), 4)
-                            if target.Priority=="diamond" then diamond+=buyAmt
-                            elseif target.Priority=="insta" then insta+=buyAmt
-                            end
-                            lastWebhookPush = 0  -- force immediate update on buy
-                            scheduleWebhook(string.format("✅ Bought %s x%d", name, buyAmt), getGems(), insta, diamond)
+                            lastWebhookPush = 0
+                            scheduleWebhook(string.format("✅ Bought %s x%d", name, buyAmt), getGems(), newInsta, newDiamond)
                         else
                             seenItems[guid] = nil
                         end
@@ -670,7 +695,6 @@ else
         end
     end
 
-    -- wait for inventory to be fully loaded before first webhook send
     task.spawn(function()
         waitForInventory()
         local i, d = getInventoryCounts()
